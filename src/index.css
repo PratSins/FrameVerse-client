@@ -1,0 +1,348 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #090909;
+  color: #f5f5f5;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  width: min(1100px, 92vw);
+  margin: 0 auto;
+  padding: 55px 0 80px;
+}
+
+.hero {
+  text-align: center;
+  margin-bottom: 42px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(42px, 5vw, 64px);
+  font-weight: 800;
+  letter-spacing: -2px;
+}
+
+.hero p {
+  margin: 16px 0 0;
+  color: #999;
+  font-size: 21px;
+}
+
+.video-card {
+  background: #141416;
+  border: 1px solid #29292d;
+  border-radius: 28px;
+  padding: 32px;
+}
+
+/* ----------------------------------
+   CAMERA
+---------------------------------- */
+
+.camera-section {
+  width: 100%;
+}
+
+.camera-pane {
+  position: relative;
+
+  /* Smaller than the previous huge pane */
+  width: 100%;
+  max-width: 900px;
+  aspect-ratio: 16 / 9;
+
+  margin: 0 auto;
+
+  background: #101012;
+  border: 1px solid #303035;
+  border-radius: 20px;
+
+  overflow: hidden;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  cursor: pointer;
+}
+
+.camera-pane.camera-open {
+  cursor: default;
+}
+
+.camera-video {
+  width: 100%;
+  height: 100%;
+
+  object-fit: cover;
+
+  display: block;
+}
+
+.camera-placeholder {
+  color: #777;
+  font-size: 19px;
+  user-select: none;
+}
+
+/* ----------------------------------
+   CAMERA CONTROLS
+---------------------------------- */
+
+.camera-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  min-height: 76px;
+  margin-top: 18px;
+}
+
+.primary-button,
+.danger-button,
+.secondary-button,
+.upload-button {
+  border-radius: 14px;
+  padding: 16px 28px;
+
+  font-size: 18px;
+  font-weight: 700;
+
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+
+.primary-button {
+  border: none;
+  background: #fff;
+  color: #111;
+}
+
+.primary-button:hover {
+  transform: translateY(-1px);
+  opacity: 0.9;
+}
+
+.danger-button {
+  border: none;
+  background: #ff3029;
+  color: white;
+}
+
+.danger-button:hover {
+  transform: translateY(-1px);
+  opacity: 0.9;
+}
+
+.secondary-button {
+  background: transparent;
+  color: white;
+  border: 1px solid #39393f;
+}
+
+.secondary-button:hover {
+  background: #1d1d20;
+}
+
+/* ----------------------------------
+   COUNTDOWN
+---------------------------------- */
+
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(0, 0, 0, 0.25);
+
+  font-size: 110px;
+  font-weight: 800;
+
+  text-shadow: 0 4px 30px rgba(0, 0, 0, 0.7);
+
+  z-index: 5;
+}
+
+/* ----------------------------------
+   RECORDING INDICATOR
+---------------------------------- */
+
+.recording-indicator {
+  position: absolute;
+  left: 18px;
+  top: 18px;
+
+  display: flex;
+  align-items: center;
+  gap: 9px;
+
+  padding: 10px 15px;
+
+  background: rgba(0, 0, 0, 0.8);
+  border-radius: 999px;
+
+  font-weight: 700;
+  font-size: 15px;
+
+  z-index: 10;
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+
+  background: #ff3029;
+  border-radius: 50%;
+
+  animation: recordingPulse 1s infinite;
+}
+
+@keyframes recordingPulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ----------------------------------
+   OR DIVIDER
+---------------------------------- */
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+
+  margin: 28px auto;
+
+  max-width: 900px;
+
+  color: #666;
+  font-weight: 700;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: "";
+
+  flex: 1;
+
+  height: 1px;
+  background: #29292d;
+}
+
+/* ----------------------------------
+   UPLOAD
+---------------------------------- */
+
+.upload-button {
+  display: block;
+  width: fit-content;
+  margin: 0 auto;
+
+  background: transparent;
+  border: 1px solid #39393f;
+  color: white;
+}
+
+.upload-button:hover {
+  background: #1d1d20;
+}
+
+/* ----------------------------------
+   RECORDED VIDEO
+---------------------------------- */
+
+.recorded-video-section {
+  width: 100%;
+}
+
+.recorded-video-section h2 {
+  margin: 0 0 22px;
+
+  font-size: 28px;
+}
+
+.recorded-video {
+  display: block;
+
+  width: 100%;
+  max-width: 900px;
+  height: auto;
+
+  margin: 0 auto;
+
+  border-radius: 18px;
+  background: black;
+}
+
+/* ----------------------------------
+   VIDEO ACTIONS
+---------------------------------- */
+
+.video-actions {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+
+  margin-top: 28px;
+}
+
+/* ----------------------------------
+   MOBILE
+---------------------------------- */
+
+@media (max-width: 700px) {
+  .app {
+    width: 94vw;
+    padding-top: 35px;
+  }
+
+  .video-card {
+    padding: 18px;
+    border-radius: 20px;
+  }
+
+  .hero h1 {
+    font-size: 42px;
+  }
+
+  .hero p {
+    font-size: 17px;
+  }
+
+  .camera-pane {
+    aspect-ratio: 4 / 3;
+  }
+
+  .video-actions {
+    flex-direction: column;
+  }
+
+  .video-actions button {
+    width: 100%;
+  }
+}
