@@ -541,3 +541,35 @@ button {
     width: 100%;
   }
 }
+
+/* ----------------------------------
+   TIMELINE & SCRUBBER
+---------------------------------- */
+
+.timeline-container {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 900px;
+  margin: 18px auto 0;
+  padding: 0 8px;
+}
+
+.time-display {
+  font-size: 14px;
+  font-weight: 700;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+  min-width: 38px;
+}
+
+.timeline-slider {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #25252c;
+  outline: none;
+  cursor: pointer;
+  accent-color: #6366f1;
+}
+

@@ -25,11 +25,13 @@ export default function CompositorView({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [statusMessage, setStatusMessage] = useState("Initializing hand tracker & media...");
-  const [exportProgress, setExportProgress] = useState("");
 
   const animFrameIdRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
+  const isExportingRef = useRef(false);
 
   // Initialize MediaPipe & Video metadata
   useEffect(() => {
@@ -56,12 +58,14 @@ export default function CompositorView({
           if (canvasRef.current && orig) {
             canvasRef.current.width = orig.videoWidth || 640;
             canvasRef.current.height = orig.videoHeight || 360;
+            setDuration(orig.duration || 0);
+
             trackerRef.current = new FrameTracker(
               canvasRef.current.width,
               canvasRef.current.height
             );
 
-            // Draw poster frame
+            // Draw initial poster frame
             const ctx = canvasRef.current.getContext("2d");
             if (ctx) {
               orig.currentTime = 0.01;
@@ -74,7 +78,7 @@ export default function CompositorView({
         }
 
         setIsReady(true);
-        setStatusMessage("Ready! Click Play to see your AI Finger Frame window.");
+        setStatusMessage("Ready! Press Play or Replay to watch the Finger Frame effect.");
       } catch (err) {
         console.error("Compositor init error:", err);
         setStatusMessage("Failed to initialize hand tracker. Please refresh.");
@@ -106,6 +110,7 @@ export default function CompositorView({
 
     // Draw base original video frame
     ctx.drawImage(orig, 0, 0, canvas.width, canvas.height);
+    setCurrentTime(orig.currentTime);
 
     // Track hands if video time advanced
     if (landmarker && orig.currentTime !== lastVideoTimeRef.current) {
@@ -119,7 +124,7 @@ export default function CompositorView({
     }
 
     // Keep stylized video strictly in step
-    if (Math.abs(sty.currentTime - orig.currentTime) > 0.15) {
+    if (Math.abs(sty.currentTime - orig.currentTime) > 0.1) {
       sty.currentTime = orig.currentTime;
     }
 
@@ -131,10 +136,32 @@ export default function CompositorView({
 
     if (!orig.paused && !orig.ended) {
       animFrameIdRef.current = requestAnimationFrame(renderFrame);
-    } else if (orig.ended) {
+    } else {
       setIsPlaying(false);
     }
   }, []);
+
+  const playFrom = async (time: number) => {
+    const orig = origRef.current;
+    const sty = styRef.current;
+    if (!orig || !sty || !isReady) return;
+
+    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+
+    orig.currentTime = time;
+    sty.currentTime = time;
+    if (time === 0) {
+      trackerRef.current?.reset();
+    }
+
+    try {
+      await Promise.all([orig.play(), sty.play()]);
+      setIsPlaying(true);
+      animFrameIdRef.current = requestAnimationFrame(renderFrame);
+    } catch (err) {
+      console.warn("Play error:", err);
+    }
+  };
 
   const handlePlayPause = async () => {
     const orig = origRef.current;
@@ -147,18 +174,40 @@ export default function CompositorView({
       setIsPlaying(false);
       if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
     } else {
-      if (orig.ended || orig.currentTime >= orig.duration - 0.1) {
-        orig.currentTime = 0;
-        sty.currentTime = 0;
-        trackerRef.current?.reset();
-      }
-
-      await Promise.all([orig.play(), sty.play()]);
-      setIsPlaying(true);
-      animFrameIdRef.current = requestAnimationFrame(renderFrame);
+      const targetTime = orig.ended || orig.currentTime >= orig.duration - 0.1 ? 0 : orig.currentTime;
+      playFrom(targetTime);
     }
   };
 
+  const handleReplay = () => {
+    playFrom(0);
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTime = parseFloat(e.target.value);
+    const orig = origRef.current;
+    const sty = styRef.current;
+    if (!orig || !sty) return;
+
+    orig.currentTime = newTime;
+    sty.currentTime = newTime;
+    setCurrentTime(newTime);
+
+    // Render single frame at seeked point
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(orig, 0, 0, canvas.width, canvas.height);
+        if (trackerRef.current?.corners && trackerRef.current.presence > 0.01) {
+          drawWindow(ctx, trackerRef.current.corners, trackerRef.current.presence, sty, canvas.width, canvas.height);
+          drawOutline(ctx, trackerRef.current.corners, trackerRef.current.presence, newTime);
+        }
+      }
+    }
+  };
+
+  // Robust, Reliable Export with Guaranteed Completion & Progress
   const handleExport = async () => {
     const canvas = canvasRef.current;
     const orig = origRef.current;
@@ -167,13 +216,15 @@ export default function CompositorView({
     if (!canvas || !orig || !sty || isExporting) return;
 
     setIsExporting(true);
-    setExportProgress("Recording composite video...");
-    setStatusMessage("Exporting — rendering composite video...");
+    isExportingRef.current = true;
+    setStatusMessage("Recording composite video... please wait.");
 
-    // Pause current playback & reset
+    // Pause any current playback
     orig.pause();
     sty.pause();
     setIsPlaying(false);
+    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+
     orig.currentTime = 0;
     sty.currentTime = 0;
     trackerRef.current?.reset();
@@ -190,12 +241,22 @@ export default function CompositorView({
     const isMp4 = mime.startsWith("video/mp4");
     const recorder = new MediaRecorder(stream, {
       mimeType: mime,
-      videoBitsPerSecond: 12_000_000,
+      videoBitsPerSecond: 8_000_000,
     });
 
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    let completed = false;
+    const finishExport = () => {
+      if (completed) return;
+      completed = true;
+
+      if (recorder.state !== "inactive") {
+        recorder.stop();
+      }
     };
 
     recorder.onstop = () => {
@@ -205,23 +266,38 @@ export default function CompositorView({
       const a = document.createElement("a");
       a.href = url;
       a.download = `frameverse-finger-frame-${styleName.toLowerCase()}.${ext}`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
 
       setIsExporting(false);
-      setExportProgress("");
+      isExportingRef.current = false;
       setStatusMessage("Export complete! Video downloaded.");
     };
 
     recorder.start();
 
-    orig.onended = () => {
-      orig.onended = null;
-      recorder.stop();
-    };
+    // Attach end & timeupdate watchers
+    orig.onended = finishExport;
+    const checkInterval = setInterval(() => {
+      if (!isExportingRef.current) {
+        clearInterval(checkInterval);
+        return;
+      }
+      if (orig.ended || (orig.duration > 0 && orig.currentTime >= orig.duration - 0.1)) {
+        clearInterval(checkInterval);
+        finishExport();
+      }
+    }, 200);
 
-    await Promise.all([orig.play(), sty.play()]);
-    setIsPlaying(true);
-    animFrameIdRef.current = requestAnimationFrame(renderFrame);
+    try {
+      await Promise.all([orig.play(), sty.play()]);
+      setIsPlaying(true);
+      animFrameIdRef.current = requestAnimationFrame(renderFrame);
+    } catch (e) {
+      console.error("Export play error:", e);
+      finishExport();
+    }
   };
 
   return (
@@ -231,14 +307,15 @@ export default function CompositorView({
         <span className="style-badge">{styleName.toUpperCase()} STYLE</span>
       </div>
 
-      <p className="compositor-status">{statusMessage} {exportProgress}</p>
+      <p className="compositor-status">{statusMessage}</p>
 
-      {/* Hidden synchronized source videos */}
+      {/* Hidden synchronized source videos with crossOrigin support */}
       <video
         ref={origRef}
         src={originalVideoUrl}
         playsInline
         muted
+        crossOrigin="anonymous"
         preload="auto"
         style={{ display: "none" }}
       />
@@ -247,6 +324,7 @@ export default function CompositorView({
         src={stylizedVideoUrl}
         playsInline
         muted
+        crossOrigin="anonymous"
         preload="auto"
         style={{ display: "none" }}
       />
@@ -255,6 +333,25 @@ export default function CompositorView({
         <canvas ref={canvasRef} className="compositor-canvas" />
       </div>
 
+      {/* Playback Timeline & Scrubber */}
+      {duration > 0 && (
+        <div className="timeline-container">
+          <span className="time-display">{currentTime.toFixed(1)}s</span>
+          <input
+            type="range"
+            className="timeline-slider"
+            min={0}
+            max={duration}
+            step={0.05}
+            value={currentTime}
+            onChange={handleSeek}
+            disabled={isExporting}
+          />
+          <span className="time-display">{duration.toFixed(1)}s</span>
+        </div>
+      )}
+
+      {/* Controls */}
       <div className="compositor-controls">
         <button
           className="secondary-button"
@@ -265,11 +362,19 @@ export default function CompositorView({
         </button>
 
         <button
+          className="secondary-button"
+          onClick={handleReplay}
+          disabled={!isReady || isExporting}
+        >
+          🔄 Replay
+        </button>
+
+        <button
           className="primary-button"
           onClick={handlePlayPause}
           disabled={!isReady || isExporting}
         >
-          {isPlaying ? "Pause" : "Play Effect"}
+          {isPlaying ? "⏸️ Pause" : "▶️ Play"}
         </button>
 
         <button
@@ -277,7 +382,7 @@ export default function CompositorView({
           onClick={handleExport}
           disabled={!isReady || isExporting}
         >
-          {isExporting ? "Exporting..." : "Export Video"}
+          {isExporting ? "⏳ Exporting..." : "⬇️ Export Video"}
         </button>
       </div>
     </div>
