@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import CameraView from "./components/CameraView";
 import CompositorView from "./components/CompositorView";
+import { Navbar, type ActiveTab } from "./components/Navbar";
+import { LoginModal } from "./components/LoginModal";
+import { VChatView } from "./components/VChat/VChatView";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import {
   createUploadUrl,
   uploadVideoToGCS,
@@ -16,7 +20,11 @@ const STYLES = [
   { id: "pixar", label: "🌟 Pixar Style" },
 ];
 
-function App() {
+function FrameVerseApp() {
+  const { accessToken } = useAuth();
+  const [activeTab, setActiveTab] = useState<ActiveTab>("toonify");
+
+  // Camera & Recording state
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -59,61 +67,56 @@ function App() {
   };
 
   // --------------------------------------------------
-  // Start recording after 3-second countdown
+  // Start countdown -> start recording
   // --------------------------------------------------
   const startRecording = () => {
-    if (!stream) return;
     setCountdown(3);
-
     let count = 3;
-    const countdownTimer = window.setInterval(() => {
+
+    const timer = window.setInterval(() => {
       count--;
-      if (count === 0) {
-        window.clearInterval(countdownTimer);
-        setCountdown(null);
-        beginRecording();
-      } else {
+      if (count > 0) {
         setCountdown(count);
+      } else {
+        window.clearInterval(timer);
+        setCountdown(null);
+        beginMediaRecorder();
       }
     }, 1000);
   };
 
-  // --------------------------------------------------
-  // Start MediaRecorder
-  // --------------------------------------------------
-  const beginRecording = () => {
+  const beginMediaRecorder = () => {
     if (!stream) return;
-    chunksRef.current = [];
 
-    let mimeType = "video/mp4";
-    if (MediaRecorder.isTypeSupported("video/mp4")) {
-      mimeType = "video/mp4";
-    } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) {
-      mimeType = "video/webm;codecs=vp9";
-    } else if (MediaRecorder.isTypeSupported("video/webm")) {
-      mimeType = "video/webm";
+    chunksRef.current = [];
+    const mimeTypes = [
+      "video/webm;codecs=vp9",
+      "video/webm;codecs=vp8",
+      "video/webm",
+      "video/mp4",
+    ];
+
+    let chosenMime = "video/webm";
+    for (const m of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(m)) {
+        chosenMime = m;
+        break;
+      }
     }
 
-    const recorder = new MediaRecorder(
-      stream,
-      mimeType ? { mimeType } : undefined
-    );
-
+    const recorder = new MediaRecorder(stream, { mimeType: chosenMime });
     mediaRecorderRef.current = recorder;
 
     recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
+      if (event.data && event.data.size > 0) {
         chunksRef.current.push(event.data);
       }
     };
 
     recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, {
-        type: recorder.mimeType || "video/mp4",
-      });
-
-      const videoUrl = URL.createObjectURL(blob);
-      setRecordedVideoUrl(videoUrl);
+      const blob = new Blob(chunksRef.current, { type: chosenMime });
+      const url = URL.createObjectURL(blob);
+      setRecordedVideoUrl(url);
       setRecordedVideoBlob(blob);
       setIsRecording(false);
       setElapsedSeconds(0);
@@ -180,7 +183,7 @@ function App() {
       // Step 1: Get signed GCS upload URL
       setConversionStep("Step 1/4: Requesting secure upload URL...");
       const contentType = recordedVideoBlob.type || "video/mp4";
-      const uploadData = await createUploadUrl(contentType, selectedStyle);
+      const uploadData = await createUploadUrl(contentType, selectedStyle, accessToken);
 
       // Step 2: Upload video to GCS
       setConversionStep("Step 2/4: Uploading video to Cloud Storage...");
@@ -188,7 +191,7 @@ function App() {
 
       // Step 3: Trigger Vertex AI Processing
       setConversionStep("Step 3/4: Submitting video to Gemini Omni Flash...");
-      await startProcessing(uploadData.job_id);
+      await startProcessing(uploadData.job_id, accessToken);
 
       // Step 4: Poll until job is completed
       setConversionStep("Step 4/4: AI restyling video (preserving pose, motion & framing)...");
@@ -253,119 +256,143 @@ function App() {
   }, [stream, recordedVideoUrl]);
 
   return (
-    <main className="app">
-      <header className="hero">
-        <h1>FrameVerse</h1>
-        <p>Turn your videos into something extraordinary with Finger Frame AI.</p>
-      </header>
+    <div className="app-layout">
+      {/* Top Navigation Bar */}
+      <Navbar activeTab={activeTab} onTabChange={setActiveTab} />
 
-      <section className="video-card">
-        {/* Case 1: Result ready with Compositor View */}
-        {stylizedVideoUrl && recordedVideoUrl ? (
-          <CompositorView
-            originalVideoUrl={recordedVideoUrl}
-            stylizedVideoUrl={stylizedVideoUrl}
-            styleName={selectedStyle}
-            onReset={handleReset}
-          />
-        ) : !recordedVideoUrl ? (
-          /* Case 2: Camera Recording or File Upload */
+      {/* Main Content Area */}
+      <main className="app">
+        {activeTab === "toonify" ? (
           <>
-            <CameraView
-              stream={stream}
-              isCameraOpen={cameraOpen}
-              isRecording={isRecording}
-              countdown={countdown}
-              elapsedSeconds={elapsedSeconds}
-              onOpenCamera={openCamera}
-              onStartRecording={startRecording}
-              onStopRecording={stopRecording}
-            />
+            <header className="hero">
+              <h1>FrameVerse Studio</h1>
+              <p>Turn your videos into something extraordinary with Finger Frame AI.</p>
+            </header>
 
-            {!cameraOpen && (
-              <>
-                <div className="or-divider">
-                  <span>OR</span>
-                </div>
-
-                <label className="upload-button">
-                  Upload Video
-                  <input
-                    type="file"
-                    accept="video/*"
-                    onChange={handleFileUpload}
-                    hidden
+            <section className="video-card">
+              {/* Case 1: Result ready with Compositor View */}
+              {stylizedVideoUrl && recordedVideoUrl ? (
+                <CompositorView
+                  originalVideoUrl={recordedVideoUrl}
+                  stylizedVideoUrl={stylizedVideoUrl}
+                  styleName={selectedStyle}
+                  onReset={handleReset}
+                />
+              ) : !recordedVideoUrl ? (
+                /* Case 2: Camera Recording or File Upload */
+                <>
+                  <CameraView
+                    stream={stream}
+                    isCameraOpen={cameraOpen}
+                    isRecording={isRecording}
+                    countdown={countdown}
+                    elapsedSeconds={elapsedSeconds}
+                    onOpenCamera={openCamera}
+                    onStartRecording={startRecording}
+                    onStopRecording={stopRecording}
                   />
-                </label>
-              </>
-            )}
+
+                  {!cameraOpen && (
+                    <>
+                      <div className="or-divider">
+                        <span>OR</span>
+                      </div>
+
+                      <label className="upload-button">
+                        Upload Video
+                        <input
+                          type="file"
+                          accept="video/*"
+                          onChange={handleFileUpload}
+                          hidden
+                        />
+                      </label>
+                    </>
+                  )}
+                </>
+              ) : (
+                /* Case 3: Video Preview & Style Selection */
+                <div className="recorded-video-section">
+                  <h2>Your video</h2>
+
+                  <video
+                    className="recorded-video"
+                    src={recordedVideoUrl}
+                    controls
+                    playsInline
+                  />
+
+                  {/* Style Selector */}
+                  <div className="style-selection-box">
+                    <label htmlFor="style-select">Choose AI Style:</label>
+                    <select
+                      id="style-select"
+                      className="style-dropdown"
+                      value={selectedStyle}
+                      disabled={isConverting}
+                      onChange={(e) => setSelectedStyle(e.target.value)}
+                    >
+                      {STYLES.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Progress indicator during conversion */}
+                  {isConverting && (
+                    <div className="conversion-progress-box">
+                      <div className="progress-spinner" />
+                      <p className="progress-text">{conversionStep}</p>
+                      <span className="progress-subtext">This uses Gemini Omni Flash video-to-video editing.</span>
+                    </div>
+                  )}
+
+                  {conversionError && (
+                    <div className="conversion-error-box">
+                      <p>⚠️ {conversionError}</p>
+                    </div>
+                  )}
+
+                  <div className="video-actions">
+                    <button
+                      className="secondary-button"
+                      onClick={handleReset}
+                      disabled={isConverting}
+                    >
+                      Record / Upload Another
+                    </button>
+
+                    <button
+                      className="primary-button"
+                      onClick={handleConvertVideo}
+                      disabled={isConverting}
+                    >
+                      {isConverting ? "Processing..." : "Convert Video"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
           </>
         ) : (
-          /* Case 3: Video Preview & Style Selection */
-          <div className="recorded-video-section">
-            <h2>Your video</h2>
-
-            <video
-              className="recorded-video"
-              src={recordedVideoUrl}
-              controls
-              playsInline
-            />
-
-            {/* Style Selector */}
-            <div className="style-selection-box">
-              <label htmlFor="style-select">Choose AI Style:</label>
-              <select
-                id="style-select"
-                className="style-dropdown"
-                value={selectedStyle}
-                disabled={isConverting}
-                onChange={(e) => setSelectedStyle(e.target.value)}
-              >
-                {STYLES.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Progress indicator during conversion */}
-            {isConverting && (
-              <div className="conversion-progress-box">
-                <div className="progress-spinner" />
-                <p className="progress-text">{conversionStep}</p>
-                <span className="progress-subtext">This uses Gemini Omni Flash video-to-video editing.</span>
-              </div>
-            )}
-
-            {conversionError && (
-              <div className="conversion-error-box">
-                <p>⚠️ {conversionError}</p>
-              </div>
-            )}
-
-            <div className="video-actions">
-              <button
-                className="secondary-button"
-                onClick={handleReset}
-                disabled={isConverting}
-              >
-                Record / Upload Another
-              </button>
-
-              <button
-                className="primary-button"
-                onClick={handleConvertVideo}
-                disabled={isConverting}
-              >
-                {isConverting ? "Processing..." : "Convert Video"}
-              </button>
-            </div>
-          </div>
+          /* vChat Live Rooms Tab */
+          <VChatView />
         )}
-      </section>
-    </main>
+      </main>
+
+      {/* Auth Login Modal */}
+      <LoginModal />
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <FrameVerseApp />
+    </AuthProvider>
   );
 }
 
