@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 
 export const LoginModal: React.FC = () => {
-  const { isAuthModalOpen, closeAuthModal, login } = useAuth();
+  const { isAuthModalOpen, closeAuthModal, login, authNotice } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,8 +42,14 @@ export const LoginModal: React.FC = () => {
         <div className="modal-header">
           <div className="modal-icon">🔐</div>
           <h2>Welcome Back</h2>
-          <p>Sign in to your FrameVerse account to save and manage your videos.</p>
+          <p>Sign in to your FrameVerse account to access all features.</p>
         </div>
+
+        {authNotice && (
+          <div className="modal-notice-box">
+            <span>⏱️ {authNotice}</span>
+          </div>
+        )}
 
         {error && (
           <div className="modal-error-box">

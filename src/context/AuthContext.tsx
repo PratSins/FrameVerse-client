@@ -1,9 +1,10 @@
-import React, { createContext, useContext, useState } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import type { User, LoginRequest } from "../types/auth";
 import {
   getStoredSession,
   loginUser,
   logoutUser,
+  validateOrRefreshSession,
   type StoredSession,
 } from "../services/auth";
 
@@ -12,7 +13,8 @@ interface AuthContextType {
   accessToken: string | null;
   isAuthenticated: boolean;
   isAuthModalOpen: boolean;
-  openAuthModal: () => void;
+  authNotice: string | null;
+  openAuthModal: (notice?: string | React.MouseEvent) => void;
   closeAuthModal: () => void;
   login: (credentials: LoginRequest) => Promise<void>;
   logout: () => Promise<void>;
@@ -23,6 +25,35 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<StoredSession | null>(() => getStoredSession());
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+
+  // Validate session every time the application loads
+  useEffect(() => {
+    let active = true;
+
+    async function checkSessionOnLoad() {
+      const { session: validSession, wasExpired } = await validateOrRefreshSession();
+
+      if (!active) return;
+
+      if (validSession) {
+        setSession(validSession);
+        setAuthNotice(null);
+      } else {
+        setSession(null);
+        if (wasExpired) {
+          setAuthNotice("Your session has expired. Please sign in again.");
+          setIsAuthModalOpen(true);
+        }
+      }
+    }
+
+    checkSessionOnLoad();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const login = async (credentials: LoginRequest) => {
     const data = await loginUser(credentials);
@@ -31,6 +62,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       accessToken: data.tokens.access_token,
       refreshToken: data.tokens.refresh_token,
     });
+    setAuthNotice(null);
     setIsAuthModalOpen(false);
   };
 
@@ -38,10 +70,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const refreshToken = session?.refreshToken;
     await logoutUser(refreshToken);
     setSession(null);
+    setAuthNotice(null);
   };
 
-  const openAuthModal = () => setIsAuthModalOpen(true);
-  const closeAuthModal = () => setIsAuthModalOpen(false);
+  const openAuthModal = (notice?: string | React.MouseEvent) => {
+    if (typeof notice === "string") {
+      setAuthNotice(notice);
+    } else {
+      setAuthNotice(null);
+    }
+    setIsAuthModalOpen(true);
+  };
+
+  const closeAuthModal = () => {
+    setIsAuthModalOpen(false);
+    setAuthNotice(null);
+  };
 
   return (
     <AuthContext.Provider
@@ -50,6 +94,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         accessToken: session?.accessToken || null,
         isAuthenticated: !!session?.user,
         isAuthModalOpen,
+        authNotice,
         openAuthModal,
         closeAuthModal,
         login,

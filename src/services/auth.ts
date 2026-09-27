@@ -9,6 +9,19 @@ export interface StoredSession {
   refreshToken: string;
 }
 
+export function isTokenExpired(token: string, bufferSeconds: number = 30): boolean {
+  if (!token) return true;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.exp) return true;
+    return Date.now() / 1000 >= payload.exp - bufferSeconds;
+  } catch {
+    return true;
+  }
+}
+
 export function getStoredSession(): StoredSession | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_AUTH);
@@ -32,6 +45,64 @@ export function clearSession(): void {
     localStorage.removeItem(STORAGE_KEY_AUTH);
   } catch (err) {
     console.error("Failed to clear auth session from localStorage:", err);
+  }
+}
+
+export async function refreshSession(refreshToken: string): Promise<AuthResponse> {
+  const response = await fetch(`${AUTH_API_URL}/refresh`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Session expired or refresh token invalid");
+  }
+
+  const data: AuthResponse = await response.json();
+  saveSession({
+    user: data.user,
+    accessToken: data.tokens.access_token,
+    refreshToken: data.tokens.refresh_token,
+  });
+
+  return data;
+}
+
+/**
+ * Validates the refresh token against the Auth backend on every page load.
+ * Performs an active API call to POST /api/v1/auth/refresh to verify that
+ * the refresh token has not expired (>7 days) or been revoked in PostgreSQL.
+ */
+export async function validateOrRefreshSession(): Promise<{
+  session: StoredSession | null;
+  wasExpired: boolean;
+}> {
+  const current = getStoredSession();
+  if (!current) {
+    return { session: null, wasExpired: false };
+  }
+
+  if (!current.refreshToken) {
+    clearSession();
+    return { session: null, wasExpired: true };
+  }
+
+  try {
+    // Actively verify and rotate session with Auth service on every page load
+    const refreshed = await refreshSession(current.refreshToken);
+    const updatedSession: StoredSession = {
+      user: refreshed.user,
+      accessToken: refreshed.tokens.access_token,
+      refreshToken: refreshed.tokens.refresh_token,
+    };
+    return { session: updatedSession, wasExpired: false };
+  } catch (err) {
+    console.warn("[Auth] On-load session validation failed:", err);
+    clearSession();
+    return { session: null, wasExpired: true };
   }
 }
 

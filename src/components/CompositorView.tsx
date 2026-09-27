@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { FrameTracker, drawOutline, drawWindow, initLandmarker } from "../lib/compositor";
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
 
@@ -33,6 +33,34 @@ export default function CompositorView({
   const lastVideoTimeRef = useRef<number>(-1);
   const isExportingRef = useRef(false);
 
+  // Helper: reliably obtain finite duration even from recorded WebM blobs
+  const resolveFiniteDuration = async (video: HTMLVideoElement): Promise<number> => {
+    if (isFinite(video.duration) && video.duration > 0) {
+      return video.duration;
+    }
+
+    return new Promise<number>((resolve) => {
+      const onTimeUpdate = () => {
+        video.removeEventListener("timeupdate", onTimeUpdate);
+        const d = video.duration;
+        video.currentTime = 0;
+        resolve(isFinite(d) && d > 0 ? d : 0);
+      };
+
+      video.addEventListener("timeupdate", onTimeUpdate);
+      try {
+        video.currentTime = 1e101; // Chrome WebM duration calculation trick
+      } catch {
+        // ignore
+      }
+
+      setTimeout(() => {
+        video.removeEventListener("timeupdate", onTimeUpdate);
+        resolve(isFinite(video.duration) && video.duration > 0 ? video.duration : 0);
+      }, 600);
+    });
+  };
+
   // Initialize MediaPipe & Video metadata
   useEffect(() => {
     let active = true;
@@ -46,6 +74,8 @@ export default function CompositorView({
 
         setStatusMessage("Preparing video canvas...");
         const orig = origRef.current;
+        const sty = styRef.current;
+
         if (orig) {
           await new Promise<void>((resolve) => {
             if (orig.readyState >= 1) {
@@ -58,19 +88,35 @@ export default function CompositorView({
           if (canvasRef.current && orig) {
             canvasRef.current.width = orig.videoWidth || 640;
             canvasRef.current.height = orig.videoHeight || 360;
-            setDuration(orig.duration || 0);
 
             trackerRef.current = new FrameTracker(
               canvasRef.current.width,
               canvasRef.current.height
             );
 
+            // Calculate finite duration
+            let detectedDuration = 0;
+            if (sty && isFinite(sty.duration) && sty.duration > 0) {
+              detectedDuration = sty.duration;
+            } else {
+              detectedDuration = await resolveFiniteDuration(orig);
+              if (detectedDuration <= 0 && sty) {
+                detectedDuration = await resolveFiniteDuration(sty);
+              }
+            }
+
+            if (active && detectedDuration > 0) {
+              setDuration(detectedDuration);
+            }
+
             // Draw initial poster frame
             const ctx = canvasRef.current.getContext("2d");
             if (ctx) {
               orig.currentTime = 0.01;
               orig.onseeked = () => {
-                ctx.drawImage(orig, 0, 0, canvasRef.current!.width, canvasRef.current!.height);
+                if (canvasRef.current) {
+                  ctx.drawImage(orig, 0, 0, canvasRef.current.width, canvasRef.current.height);
+                }
                 orig.onseeked = null;
               };
             }
@@ -134,19 +180,32 @@ export default function CompositorView({
       drawOutline(ctx, tracker.corners, tracker.presence, orig.currentTime);
     }
 
-    if (!orig.paused && !orig.ended) {
+    // Check if playback should continue
+    const effectiveDuration = isFinite(duration) && duration > 0 ? duration : orig.duration;
+    const isAtEnd = orig.ended || (isFinite(effectiveDuration) && effectiveDuration > 0 && orig.currentTime >= effectiveDuration - 0.05);
+
+    if (!orig.paused && !isAtEnd) {
       animFrameIdRef.current = requestAnimationFrame(renderFrame);
     } else {
+      orig.pause();
+      sty.pause();
       setIsPlaying(false);
+      if (animFrameIdRef.current) {
+        cancelAnimationFrame(animFrameIdRef.current);
+        animFrameIdRef.current = null;
+      }
     }
-  }, []);
+  }, [duration]);
 
   const playFrom = async (time: number) => {
     const orig = origRef.current;
     const sty = styRef.current;
     if (!orig || !sty || !isReady) return;
 
-    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    if (animFrameIdRef.current) {
+      cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = null;
+    }
 
     orig.currentTime = time;
     sty.currentTime = time;
@@ -172,9 +231,16 @@ export default function CompositorView({
       orig.pause();
       sty.pause();
       setIsPlaying(false);
-      if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+      if (animFrameIdRef.current) {
+        cancelAnimationFrame(animFrameIdRef.current);
+        animFrameIdRef.current = null;
+      }
     } else {
-      const targetTime = orig.ended || orig.currentTime >= orig.duration - 0.1 ? 0 : orig.currentTime;
+      const effectiveDuration = isFinite(duration) && duration > 0 ? duration : orig.duration;
+      const targetTime =
+        orig.ended || (isFinite(effectiveDuration) && orig.currentTime >= effectiveDuration - 0.1)
+          ? 0
+          : orig.currentTime;
       playFrom(targetTime);
     }
   };
@@ -207,7 +273,7 @@ export default function CompositorView({
     }
   };
 
-  // Robust, Reliable Export with Guaranteed Completion & Progress
+  // Robust, Reliable Export with Guaranteed Completion & Auto-Stop
   const handleExport = async () => {
     const canvas = canvasRef.current;
     const orig = origRef.current;
@@ -217,16 +283,20 @@ export default function CompositorView({
 
     setIsExporting(true);
     isExportingRef.current = true;
-    setStatusMessage("Recording composite video... please wait.");
+    setStatusMessage("Recording composite video for download... please wait.");
 
     // Pause any current playback
     orig.pause();
     sty.pause();
     setIsPlaying(false);
-    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    if (animFrameIdRef.current) {
+      cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = null;
+    }
 
     orig.currentTime = 0;
     sty.currentTime = 0;
+    setCurrentTime(0);
     trackerRef.current?.reset();
 
     const stream = canvas.captureStream(30);
@@ -254,8 +324,28 @@ export default function CompositorView({
       if (completed) return;
       completed = true;
 
+      // 1. Instantly STOP and PAUSE all playback so video never plays automatically!
+      orig.pause();
+      sty.pause();
+      orig.currentTime = 0;
+      sty.currentTime = 0;
+      setCurrentTime(0);
+      setIsPlaying(false);
+
+      if (animFrameIdRef.current) {
+        cancelAnimationFrame(animFrameIdRef.current);
+        animFrameIdRef.current = null;
+      }
+
+      // 2. Stop media recorder
       if (recorder.state !== "inactive") {
         recorder.stop();
+      }
+
+      // 3. Reset canvas to initial frame
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(orig, 0, 0, canvas.width, canvas.height);
       }
     };
 
@@ -272,27 +362,36 @@ export default function CompositorView({
 
       setIsExporting(false);
       isExportingRef.current = false;
-      setStatusMessage("Export complete! Video downloaded.");
+      setStatusMessage("Export complete! Video downloaded. Click Play to watch.");
     };
 
     recorder.start();
 
-    // Attach end & timeupdate watchers
+    // Determine target duration for ending export
+    const targetDuration =
+      isFinite(duration) && duration > 0
+        ? duration
+        : isFinite(sty.duration) && sty.duration > 0
+        ? sty.duration
+        : isFinite(orig.duration) && orig.duration > 0
+        ? orig.duration
+        : 10;
+
+    // Watch for end of playback to stop recording & stop video
     orig.onended = finishExport;
     const checkInterval = setInterval(() => {
       if (!isExportingRef.current) {
         clearInterval(checkInterval);
         return;
       }
-      if (orig.ended || (orig.duration > 0 && orig.currentTime >= orig.duration - 0.1)) {
+      if (orig.ended || orig.currentTime >= targetDuration - 0.1) {
         clearInterval(checkInterval);
         finishExport();
       }
-    }, 200);
+    }, 100);
 
     try {
       await Promise.all([orig.play(), sty.play()]);
-      setIsPlaying(true);
       animFrameIdRef.current = requestAnimationFrame(renderFrame);
     } catch (e) {
       console.error("Export play error:", e);
@@ -318,6 +417,12 @@ export default function CompositorView({
         crossOrigin="anonymous"
         preload="auto"
         style={{ display: "none" }}
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          if (isFinite(v.duration) && v.duration > 0 && duration <= 0) {
+            setDuration(v.duration);
+          }
+        }}
       />
       <video
         ref={styRef}
@@ -327,29 +432,35 @@ export default function CompositorView({
         crossOrigin="anonymous"
         preload="auto"
         style={{ display: "none" }}
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          if (isFinite(v.duration) && v.duration > 0) {
+            setDuration(v.duration);
+          }
+        }}
       />
 
       <div className="compositor-canvas-container">
         <canvas ref={canvasRef} className="compositor-canvas" />
       </div>
 
-      {/* Playback Timeline & Scrubber */}
-      {duration > 0 && (
-        <div className="timeline-container">
-          <span className="time-display">{currentTime.toFixed(1)}s</span>
-          <input
-            type="range"
-            className="timeline-slider"
-            min={0}
-            max={duration}
-            step={0.05}
-            value={currentTime}
-            onChange={handleSeek}
-            disabled={isExporting}
-          />
-          <span className="time-display">{duration.toFixed(1)}s</span>
-        </div>
-      )}
+      {/* Playback Timeline & Scrubber - Always display clean finite duration */}
+      <div className="timeline-container">
+        <span className="time-display">{currentTime.toFixed(1)}s</span>
+        <input
+          type="range"
+          className="timeline-slider"
+          min={0}
+          max={isFinite(duration) && duration > 0 ? duration : 10}
+          step={0.05}
+          value={Math.min(currentTime, isFinite(duration) && duration > 0 ? duration : 10)}
+          onChange={handleSeek}
+          disabled={isExporting}
+        />
+        <span className="time-display">
+          {isFinite(duration) && duration > 0 ? `${duration.toFixed(1)}s` : "--"}
+        </span>
+      </div>
 
       {/* Controls */}
       <div className="compositor-controls">

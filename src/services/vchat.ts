@@ -25,6 +25,9 @@ export async function createVChatRoom(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to create or host a room. Please sign in first.");
+    }
     const errText = await response.text();
     throw new Error(`Failed to create room: ${errText || response.statusText}`);
   }
@@ -47,6 +50,9 @@ export async function getVChatRoom(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to join a room. Please sign in first.");
+    }
     if (response.status === 404) {
       throw new Error("Room not found or has ended.");
     }

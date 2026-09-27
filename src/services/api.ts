@@ -44,6 +44,9 @@ export async function createUploadUrl(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to toonify videos. Please sign in first.");
+    }
     const errorText = await response.text();
     throw new Error(`Failed to get upload URL: ${errorText || response.statusText}`);
   }
@@ -87,6 +90,9 @@ export async function startProcessing(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to toonify videos. Please sign in first.");
+    }
     const errorText = await response.text();
     throw new Error(`Failed to start processing: ${errorText || response.statusText}`);
   }
@@ -100,6 +106,9 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to toonify videos. Please sign in first.");
+    }
     const errorText = await response.text();
     throw new Error(`Failed to get job status: ${errorText || response.statusText}`);
   }

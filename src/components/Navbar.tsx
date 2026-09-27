@@ -1,7 +1,7 @@
 import React from "react";
 import { useAuth } from "../context/AuthContext";
 
-export type ActiveTab = "toonify" | "vchat";
+export type ActiveTab = "home" | "toonify" | "vchat";
 
 interface NavbarProps {
   activeTab: ActiveTab;
@@ -14,12 +14,18 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, onTabChange }) => {
   return (
     <header className="navbar-container">
       <div className="navbar-left">
-        <div className="navbar-logo" onClick={() => onTabChange("toonify")}>
+        <div className="navbar-logo" onClick={() => onTabChange("home")}>
           <span className="logo-icon">🔮</span>
           <span className="logo-text">FrameVerse</span>
         </div>
 
         <nav className="navbar-tabs">
+          <button
+            className={`tab-btn ${activeTab === "home" ? "active" : ""}`}
+            onClick={() => onTabChange("home")}
+          >
+            🏠 Home
+          </button>
           <button
             className={`tab-btn ${activeTab === "toonify" ? "active" : ""}`}
             onClick={() => onTabChange("toonify")}

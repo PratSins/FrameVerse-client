@@ -35,6 +35,7 @@ export const VChatLobby: React.FC<VChatLobbyProps> = ({ onJoinRoom }) => {
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
+
     const id = joinRoomId.trim();
     if (!id) {
       setError("Please enter a valid Room ID.");
@@ -45,7 +46,7 @@ export const VChatLobby: React.FC<VChatLobbyProps> = ({ onJoinRoom }) => {
     setIsJoining(true);
 
     try {
-      // Validate room existence
+      // Validate room existence with backend
       await getVChatRoom(id, accessToken);
       onJoinRoom(id);
     } catch (err: unknown) {
@@ -67,10 +68,10 @@ export const VChatLobby: React.FC<VChatLobbyProps> = ({ onJoinRoom }) => {
       {!isAuthenticated && (
         <div className="vchat-auth-prompt">
           <span>💡 You are in Guest Mode. </span>
-          <button className="auth-link-btn" onClick={openAuthModal}>
+          <button className="auth-link-btn" onClick={() => openAuthModal()}>
             Sign in
           </button>
-          <span> to host rooms with your verified identity.</span>
+          <span> to host or join live video rooms.</span>
         </div>
       )}
 

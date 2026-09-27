@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import CameraView from "./components/CameraView";
 import CompositorView from "./components/CompositorView";
 import { Navbar, type ActiveTab } from "./components/Navbar";
+import { HomeView } from "./components/HomeView";
+import { Footer } from "./components/Footer";
 import { LoginModal } from "./components/LoginModal";
 import { VChatView } from "./components/VChat/VChatView";
 import { AuthProvider, useAuth } from "./context/AuthContext";
@@ -22,7 +24,7 @@ const STYLES = [
 
 function FrameVerseApp() {
   const { accessToken } = useAuth();
-  const [activeTab, setActiveTab] = useState<ActiveTab>("toonify");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("home");
 
   // Camera & Recording state
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -49,7 +51,7 @@ function FrameVerseApp() {
   const recordingTimerRef = useRef<number | null>(null);
 
   // --------------------------------------------------
-  // Open camera
+  // Camera Controls
   // --------------------------------------------------
   const openCamera = async () => {
     try {
@@ -57,166 +59,160 @@ function FrameVerseApp() {
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
-
       setStream(mediaStream);
       setCameraOpen(true);
-    } catch (error) {
-      console.error("Camera error:", error);
-      alert("Could not access your camera. Please allow camera access and try again.");
+    } catch (err) {
+      console.error("Camera access denied:", err);
+      alert("Unable to access camera. Please check permissions.");
     }
   };
 
+  const closeCamera = () => {
+    stream?.getTracks().forEach((track) => track.stop());
+    setStream(null);
+    setCameraOpen(false);
+    setIsRecording(false);
+    setCountdown(null);
+    setElapsedSeconds(0);
+  };
+
   // --------------------------------------------------
-  // Start countdown -> start recording
+  // Recording Flow
   // --------------------------------------------------
   const startRecording = () => {
-    setCountdown(3);
-    let count = 3;
-
-    const timer = window.setInterval(() => {
-      count--;
-      if (count > 0) {
-        setCountdown(count);
-      } else {
-        window.clearInterval(timer);
-        setCountdown(null);
-        beginMediaRecorder();
-      }
-    }, 1000);
-  };
-
-  const beginMediaRecorder = () => {
-    if (!stream) return;
+    if (!stream || isRecording) return;
 
     chunksRef.current = [];
-    const mimeTypes = [
-      "video/webm;codecs=vp9",
-      "video/webm;codecs=vp8",
-      "video/webm",
-      "video/mp4",
-    ];
+    setRecordedVideoUrl(null);
+    setRecordedVideoBlob(null);
 
-    let chosenMime = "video/webm";
-    for (const m of mimeTypes) {
-      if (MediaRecorder.isTypeSupported(m)) {
-        chosenMime = m;
-        break;
-      }
-    }
-
-    const recorder = new MediaRecorder(stream, { mimeType: chosenMime });
-    mediaRecorderRef.current = recorder;
+    const recorder = new MediaRecorder(stream, {
+      mimeType: "video/webm;codecs=vp8,opus",
+    });
 
     recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
+      if (event.data.size > 0) {
         chunksRef.current.push(event.data);
       }
     };
 
     recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: chosenMime });
+      const blob = new Blob(chunksRef.current, { type: "video/webm" });
       const url = URL.createObjectURL(blob);
-      setRecordedVideoUrl(url);
       setRecordedVideoBlob(blob);
-      setIsRecording(false);
-      setElapsedSeconds(0);
+      setRecordedVideoUrl(url);
+      closeCamera();
     };
 
-    recorder.start();
+    recorder.start(1000);
+    mediaRecorderRef.current = recorder;
     setIsRecording(true);
     setElapsedSeconds(0);
 
-    let seconds = 0;
     recordingTimerRef.current = window.setInterval(() => {
-      seconds++;
-      setElapsedSeconds(seconds);
-      if (seconds >= MAX_RECORDING_SECONDS) {
-        stopRecording();
-      }
+      setElapsedSeconds((prev) => {
+        if (prev + 1 >= MAX_RECORDING_SECONDS) {
+          stopRecording();
+          return MAX_RECORDING_SECONDS;
+        }
+        return prev + 1;
+      });
     }, 1000);
+
+    const triggerCountdown = (seconds: number) => {
+      setCountdown(seconds);
+      const interval = window.setInterval(() => {
+        setCountdown((prev) => {
+          if (prev === null || prev <= 1) {
+            window.clearInterval(interval);
+            return null;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    };
+
+    triggerCountdown(3);
   };
 
-  // --------------------------------------------------
-  // Stop recording
-  // --------------------------------------------------
   const stopRecording = () => {
+    if (!isRecording) return;
     if (recordingTimerRef.current !== null) {
       window.clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
-
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== "inactive") {
-      recorder.stop();
-    }
+    mediaRecorderRef.current?.stop();
     setIsRecording(false);
   };
 
   // --------------------------------------------------
-  // Handle File Upload from disk
+  // File Upload Fallback
   // --------------------------------------------------
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith("video/")) {
-      alert("Please select a valid video file.");
-      return;
+    if (recordedVideoUrl) {
+      URL.revokeObjectURL(recordedVideoUrl);
     }
 
     const url = URL.createObjectURL(file);
-    setRecordedVideoUrl(url);
     setRecordedVideoBlob(file);
-    e.target.value = "";
+    setRecordedVideoUrl(url);
+    setCameraOpen(false);
   };
 
   // --------------------------------------------------
-  // Convert Video through Backend Vertex AI API
+  // AI Conversion Pipeline
   // --------------------------------------------------
   const handleConvertVideo = async () => {
     if (!recordedVideoBlob) return;
 
     setIsConverting(true);
     setConversionError(null);
+    setConversionStep("Requesting secure upload authorization...");
 
     try {
-      // Step 1: Get signed GCS upload URL
-      setConversionStep("Step 1/4: Requesting secure upload URL...");
       const contentType = recordedVideoBlob.type || "video/mp4";
+
+      // 1. Request signed URL from backend
+      setConversionStep("Getting direct Cloud Storage upload authorization...");
       const uploadData = await createUploadUrl(contentType, selectedStyle, accessToken);
 
-      // Step 2: Upload video to GCS
-      setConversionStep("Step 2/4: Uploading video to Cloud Storage...");
+      // 2. Upload video directly to Google Cloud Storage
+      setConversionStep("Uploading video to Google Cloud Storage...");
       await uploadVideoToGCS(uploadData.upload_url, recordedVideoBlob, contentType);
 
-      // Step 3: Trigger Vertex AI Processing
-      setConversionStep("Step 3/4: Submitting video to Gemini Omni Flash...");
+      // 3. Trigger processing pipeline on backend
+      setConversionStep("Triggering Gemini Omni Flash video pipeline...");
       await startProcessing(uploadData.job_id, accessToken);
 
-      // Step 4: Poll until job is completed
-      setConversionStep("Step 4/4: AI restyling video (preserving pose, motion & framing)...");
-      const finishedJob = await pollJobUntilComplete(uploadData.job_id, (job) => {
-        if (job.status === "processing") {
-          setConversionStep("Step 4/4: Gemini Omni Flash is rendering video frames...");
+      // 4. Poll until job is completed
+      setConversionStep("AI model is initializing video processing...");
+      const completedJob = await pollJobUntilComplete(
+        uploadData.job_id,
+        (job) => {
+          if (job.status === "processing") {
+            setConversionStep("AI model is currently generating stylized video frames...");
+          }
         }
-      });
+      );
 
-      if (finishedJob.download_url) {
-        setStylizedVideoUrl(finishedJob.download_url);
-        setIsConverting(false);
+      if (completedJob.download_url) {
+        setStylizedVideoUrl(completedJob.download_url);
       } else {
-        throw new Error("Job completed but download URL was not provided.");
+        throw new Error("Conversion succeeded but no download URL was returned.");
       }
-    } catch (err: any) {
-      console.error("Conversion error:", err);
-      setConversionError(err.message || "Failed to convert video. Please try again.");
+    } catch (err: unknown) {
+      console.error("Conversion failed:", err);
+      const message = err instanceof Error ? err.message : "Unknown error occurred";
+      setConversionError(message);
+    } finally {
       setIsConverting(false);
+      setConversionStep("");
     }
   };
 
-  // --------------------------------------------------
-  // Reset / Record Another
-  // --------------------------------------------------
   const handleReset = () => {
     stream?.getTracks().forEach((track) => track.stop());
 
@@ -262,7 +258,11 @@ function FrameVerseApp() {
 
       {/* Main Content Area */}
       <main className="app">
-        {activeTab === "toonify" ? (
+        {activeTab === "home" ? (
+          /* Home Introduction & Guide Tab */
+          <HomeView onNavigate={setActiveTab} />
+        ) : activeTab === "toonify" ? (
+          /* Toonify AI Studio Tab */
           <>
             <header className="hero">
               <h1>FrameVerse Studio</h1>
@@ -311,12 +311,10 @@ function FrameVerseApp() {
                   )}
                 </>
               ) : (
-                /* Case 3: Video Preview & Style Selection */
-                <div className="recorded-video-section">
-                  <h2>Your video</h2>
-
+                /* Case 3: Video Recorded, Ready for Style Selection & Conversion */
+                <div className="preview-container">
                   <video
-                    className="recorded-video"
+                    className="recorded-preview"
                     src={recordedVideoUrl}
                     controls
                     playsInline
@@ -381,6 +379,9 @@ function FrameVerseApp() {
           <VChatView />
         )}
       </main>
+
+      {/* Global Footnote Bar */}
+      <Footer onNavigate={setActiveTab} />
 
       {/* Auth Login Modal */}
       <LoginModal />
