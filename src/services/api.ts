@@ -1,4 +1,5 @@
-const API_BASE_URL = "http://localhost:8080/api/v1/toonify";
+const BACKEND_API_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:8080/api/v1";
+const API_BASE_URL = `${BACKEND_API_URL}/toonify`;
 
 export interface CreateUploadResponse {
   job_id: string;
@@ -21,15 +22,21 @@ export interface JobStatusResponse {
 
 export async function createUploadUrl(
   contentType: string = "video/mp4",
-  style: string = "anime"
+  style: string = "anime",
+  accessToken?: string | null
 ): Promise<CreateUploadResponse> {
   const cleanType = contentType.split(";")[0].trim() || "video/mp4";
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
   const response = await fetch(`${API_BASE_URL}/upload-url`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       content_type: cleanType,
       style: style,
@@ -37,6 +44,9 @@ export async function createUploadUrl(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to toonify videos. Please sign in first.");
+    }
     const errorText = await response.text();
     throw new Error(`Failed to get upload URL: ${errorText || response.statusText}`);
   }
@@ -65,12 +75,24 @@ export async function uploadVideoToGCS(
   }
 }
 
-export async function startProcessing(jobId: string): Promise<ProcessJobResponse> {
+export async function startProcessing(
+  jobId: string,
+  accessToken?: string | null
+): Promise<ProcessJobResponse> {
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
   const response = await fetch(`${API_BASE_URL}/${jobId}/process`, {
     method: "POST",
+    headers,
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to toonify videos. Please sign in first.");
+    }
     const errorText = await response.text();
     throw new Error(`Failed to start processing: ${errorText || response.statusText}`);
   }
@@ -84,6 +106,9 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("You must be logged in to toonify videos. Please sign in first.");
+    }
     const errorText = await response.text();
     throw new Error(`Failed to get job status: ${errorText || response.statusText}`);
   }
