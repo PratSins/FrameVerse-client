@@ -1,13 +1,22 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import type { ActiveTab } from "./Navbar";
 import { useAuth } from "../context/AuthContext";
 
 interface HomeViewProps {
-  onNavigate: (tab: ActiveTab) => void;
+  onNavigate?: (tab: ActiveTab) => void;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({ onNavigate }) => {
+  const navigate = useNavigate();
   const { user, isAuthenticated, openAuthModal } = useAuth();
+
+  const handleNav = (tab: ActiveTab, path: string) => {
+    if (onNavigate) {
+      onNavigate(tab);
+    }
+    navigate(path);
+  };
 
   return (
     <div className="home-container">
@@ -31,13 +40,13 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate }) => {
         <div className="home-cta-group">
           <button
             className="primary-button hero-cta-btn"
-            onClick={() => onNavigate("toonify")}
+            onClick={() => handleNav("toonify", "/toonify")}
           >
             ✨ Launch Toonify Studio
           </button>
           <button
             className="secondary-button hero-cta-btn"
-            onClick={() => onNavigate("vchat")}
+            onClick={() => handleNav("vchat", "/vchat")}
           >
             📹 Enter vChat Rooms
           </button>
@@ -65,7 +74,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate }) => {
 
       {/* Feature Highlights Grid */}
       <section className="features-grid">
-        <div className="feature-card" onClick={() => onNavigate("toonify")}>
+        <div className="feature-card" onClick={() => handleNav("toonify", "/toonify")}>
           <div className="feature-icon-wrapper toonify-glow">
             <span className="feature-icon">✨</span>
           </div>
@@ -78,7 +87,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate }) => {
           <div className="card-action-link">Open Studio →</div>
         </div>
 
-        <div className="feature-card" onClick={() => onNavigate("vchat")}>
+        <div className="feature-card" onClick={() => handleNav("vchat", "/vchat")}>
           <div className="feature-icon-wrapper vchat-glow">
             <span className="feature-icon">📹</span>
           </div>

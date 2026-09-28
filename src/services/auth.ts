@@ -82,11 +82,19 @@ export async function refreshSession(refreshToken: string): Promise<AuthResponse
       }
 
       const data: AuthResponse = await response.json();
-      saveSession({
+      const updatedSession: StoredSession = {
         user: data.user,
         accessToken: data.tokens.access_token,
         refreshToken: data.tokens.refresh_token,
-      });
+      };
+      saveSession(updatedSession);
+
+      // Notify any active React context across components or tabs
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("frameverse:auth-refreshed", { detail: updatedSession })
+        );
+      }
 
       return data;
     } finally {
@@ -95,6 +103,38 @@ export async function refreshSession(refreshToken: string): Promise<AuthResponse
   })();
 
   return activeRefreshPromise;
+}
+
+/**
+ * Returns a guaranteed valid access token.
+ * If current token has expired or is within 60s of expiring,
+ * it automatically uses the refresh token in the background.
+ */
+export async function getFreshAccessToken(): Promise<string | null> {
+  const current = getStoredSession();
+  if (!current) return null;
+
+  // If token is still fresh with at least 60 seconds buffer, return it
+  if (current.accessToken && !isTokenExpired(current.accessToken, 60)) {
+    return current.accessToken;
+  }
+
+  // If expired or about to expire, automatically refresh
+  if (current.refreshToken) {
+    try {
+      const refreshed = await refreshSession(current.refreshToken);
+      return refreshed.tokens.access_token;
+    } catch (err) {
+      console.warn("[Auth] Background token refresh failed:", err);
+      clearSession();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("frameverse:auth-expired"));
+      }
+      return null;
+    }
+  }
+
+  return null;
 }
 
 /**

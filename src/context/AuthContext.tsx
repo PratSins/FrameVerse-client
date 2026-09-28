@@ -5,6 +5,8 @@ import {
   loginUser,
   logoutUser,
   validateOrRefreshSession,
+  refreshSession,
+  isTokenExpired,
   type StoredSession,
 } from "../services/auth";
 
@@ -27,7 +29,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
-  // Validate session every time the application loads
+  // 1. Validate session on initial application load
   useEffect(() => {
     let active = true;
 
@@ -55,13 +57,59 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // 2. Synchronize with background refresh events across components and tabs
+  useEffect(() => {
+    const handleAuthRefreshed = (e: Event) => {
+      const customEvent = e as CustomEvent<StoredSession>;
+      if (customEvent.detail) {
+        setSession(customEvent.detail);
+        setAuthNotice(null);
+      }
+    };
+
+    const handleAuthExpired = () => {
+      setSession(null);
+      setAuthNotice("Your session has expired. Please sign in again.");
+      setIsAuthModalOpen(true);
+    };
+
+    window.addEventListener("frameverse:auth-refreshed", handleAuthRefreshed);
+    window.addEventListener("frameverse:auth-expired", handleAuthExpired);
+
+    return () => {
+      window.removeEventListener("frameverse:auth-refreshed", handleAuthRefreshed);
+      window.removeEventListener("frameverse:auth-expired", handleAuthExpired);
+    };
+  }, []);
+
+  // 3. Proactive Background Refresher: Keeps token alive 2 minutes before it expires!
+  useEffect(() => {
+    const interval = window.setInterval(async () => {
+      if (!session?.refreshToken || !session?.accessToken) return;
+
+      // Check if access token will expire within the next 2 minutes (120s)
+      if (isTokenExpired(session.accessToken, 120)) {
+        try {
+          await refreshSession(session.refreshToken);
+        } catch (err) {
+          console.warn("[Auth] Proactive interval refresh failed:", err);
+        }
+      }
+    }, 30000); // Check every 30 seconds
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [session?.refreshToken, session?.accessToken]);
+
   const login = async (credentials: LoginRequest) => {
     const data = await loginUser(credentials);
-    setSession({
+    const newSession: StoredSession = {
       user: data.user,
       accessToken: data.tokens.access_token,
       refreshToken: data.tokens.refresh_token,
-    });
+    };
+    setSession(newSession);
     setAuthNotice(null);
     setIsAuthModalOpen(false);
   };

@@ -1,36 +1,20 @@
 import React from "react";
-import type { ActiveTab } from "./Navbar";
+import { useNavigate } from "react-router-dom";
 
-interface FooterProps {
-  onNavigate: (tab: ActiveTab) => void;
-}
+export const Footer: React.FC = () => {
+  const navigate = useNavigate();
 
-export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
   return (
     <footer className="footer-bar">
       <div className="footer-content">
         <div className="footer-brand">
-          <div className="footer-logo" onClick={() => onNavigate("home")}>
+          <div className="footer-logo" onClick={() => navigate("/")}>
             <span className="logo-icon">🔮</span>
             <span className="logo-text">FrameVerse</span>
           </div>
           <p className="footer-tagline">
             Next-gen gesture-driven AI animation & real-time collaborative video.
           </p>
-        </div>
-
-        <div className="footer-links">
-          <button className="footer-nav-link" onClick={() => onNavigate("home")}>
-            Home
-          </button>
-          <span className="footer-separator">•</span>
-          <button className="footer-nav-link" onClick={() => onNavigate("toonify")}>
-            Toonify Studio
-          </button>
-          <span className="footer-separator">•</span>
-          <button className="footer-nav-link" onClick={() => onNavigate("vchat")}>
-            vChat Rooms
-          </button>
         </div>
 
         <div className="footer-creator">

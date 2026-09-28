@@ -25,7 +25,7 @@ export interface UseWebRTCReturn {
   isAudioMuted: boolean;
   isVideoMuted: boolean;
   toggleAudio: () => void;
-  toggleVideo: () => void;
+  toggleVideo: () => void | Promise<void>;
   leaveRoom: () => void;
 }
 
@@ -349,17 +349,61 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
     }
   }, []);
 
-  // Video Toggle
-  const toggleVideo = useCallback(() => {
-    if (localStreamRef.current) {
+  // Video Toggle with hardware camera power off (turns off Mac green LED)
+  const toggleVideo = useCallback(async () => {
+    if (!localStreamRef.current) return;
+
+    if (!isVideoMuted) {
+      // 1. Turn camera OFF: stop hardware track so green LED turns OFF
       const videoTracks = localStreamRef.current.getVideoTracks();
-      if (videoTracks.length > 0) {
-        const nextState = !videoTracks[0].enabled;
-        videoTracks.forEach((track) => (track.enabled = nextState));
-        setIsVideoMuted(!nextState);
+      videoTracks.forEach((track) => {
+        track.stop();
+        localStreamRef.current?.removeTrack(track);
+      });
+
+      // Stop sending video on all active peer connections
+      peerConnectionsRef.current.forEach((pc) => {
+        pc.getSenders().forEach((sender) => {
+          if (sender.track?.kind === "video") {
+            sender.replaceTrack(null).catch(() => {});
+          }
+        });
+      });
+
+      setIsVideoMuted(true);
+      if (localStreamRef.current) {
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      }
+    } else {
+      // 2. Turn camera ON: request fresh hardware stream
+      try {
+        const camStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
+        const newTrack = camStream.getVideoTracks()[0];
+        if (!newTrack) return;
+
+        localStreamRef.current.addTrack(newTrack);
+
+        // Update senders on all active peer connections
+        peerConnectionsRef.current.forEach((pc) => {
+          const videoSender = pc.getSenders().find(
+            (s) => s.track === null || s.track?.kind === "video"
+          );
+          if (videoSender) {
+            videoSender.replaceTrack(newTrack).catch(() => {});
+          } else if (localStreamRef.current) {
+            pc.addTrack(newTrack, localStreamRef.current);
+          }
+        });
+
+        setIsVideoMuted(false);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      } catch (err) {
+        console.error("Failed to re-enable camera:", err);
       }
     }
-  }, []);
+  }, [isVideoMuted]);
 
   // Leave Room
   const leaveRoom = useCallback(() => {

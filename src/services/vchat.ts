@@ -1,16 +1,26 @@
 import type { CreateRoomResponse, RoomResponse } from "../types/vchat";
 import { BACKEND_API_URL, BACKEND_WS_URL } from "../config";
+import { getFreshAccessToken, getStoredSession } from "./auth";
+
+async function getEffectiveToken(token?: string | null): Promise<string | null> {
+  const fresh = await getFreshAccessToken();
+  if (fresh) return fresh;
+  if (token) return token;
+  const session = getStoredSession();
+  return session?.accessToken || null;
+}
 
 export async function createVChatRoom(
   name: string,
   maxParticipants: number = 4,
   accessToken?: string | null
 ): Promise<CreateRoomResponse> {
+  const token = await getEffectiveToken(accessToken);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const response = await fetch(`${BACKEND_API_URL}/vchat/rooms`, {
@@ -37,9 +47,10 @@ export async function getVChatRoom(
   roomId: string,
   accessToken?: string | null
 ): Promise<RoomResponse> {
+  const token = await getEffectiveToken(accessToken);
   const headers: Record<string, string> = {};
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const response = await fetch(`${BACKEND_API_URL}/vchat/rooms/${roomId}`, {
@@ -62,9 +73,10 @@ export async function getVChatRoom(
 }
 
 export function getWebSocketSignalingUrl(roomId: string, accessToken?: string | null): string {
+  const token = accessToken || getStoredSession()?.accessToken;
   const baseUrl = `${BACKEND_WS_URL}/rooms/${roomId}`;
-  if (accessToken) {
-    return `${baseUrl}?token=${encodeURIComponent(accessToken)}`;
+  if (token) {
+    return `${baseUrl}?token=${encodeURIComponent(token)}`;
   }
   return baseUrl;
 }

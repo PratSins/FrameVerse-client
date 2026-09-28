@@ -1,4 +1,4 @@
-import { getStoredSession } from "./auth";
+import { getFreshAccessToken, getStoredSession } from "./auth";
 import { TOONIFY_API_URL } from "../config";
 
 const API_BASE_URL = TOONIFY_API_URL;
@@ -22,7 +22,9 @@ export interface JobStatusResponse {
   error?: string;
 }
 
-function getEffectiveToken(token?: string | null): string | null {
+async function getEffectiveToken(token?: string | null): Promise<string | null> {
+  const fresh = await getFreshAccessToken();
+  if (fresh) return fresh;
   if (token) return token;
   const session = getStoredSession();
   return session?.accessToken || null;
@@ -34,7 +36,7 @@ export async function createUploadUrl(
   accessToken?: string | null
 ): Promise<CreateUploadResponse> {
   const cleanType = contentType.split(";")[0].trim() || "video/mp4";
-  const token = getEffectiveToken(accessToken);
+  const token = await getEffectiveToken(accessToken);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -88,7 +90,7 @@ export async function startProcessing(
   jobId: string,
   accessToken?: string | null
 ): Promise<ProcessJobResponse> {
-  const token = getEffectiveToken(accessToken);
+  const token = await getEffectiveToken(accessToken);
   const headers: Record<string, string> = {};
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -114,7 +116,7 @@ export async function getJobStatus(
   jobId: string,
   accessToken?: string | null
 ): Promise<JobStatusResponse> {
-  const token = getEffectiveToken(accessToken);
+  const token = await getEffectiveToken(accessToken);
   const headers: Record<string, string> = {};
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -152,11 +154,11 @@ export async function pollJobUntilComplete(
     token = accessTokenOrOnPoll;
   }
 
-  const effectiveToken = getEffectiveToken(token);
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxTimeoutMs) {
-    const job = await getJobStatus(jobId, effectiveToken);
+    const currentToken = await getEffectiveToken(token);
+    const job = await getJobStatus(jobId, currentToken);
     if (pollCallback) {
       pollCallback(job);
     }

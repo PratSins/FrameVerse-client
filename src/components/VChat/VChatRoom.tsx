@@ -19,8 +19,11 @@ const VideoTile: React.FC<{
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
+      if (!isVideoOff) {
+        videoRef.current.play().catch(() => {});
+      }
     }
-  }, [stream]);
+  }, [stream, isVideoOff]);
 
   return (
     <div className={`video-tile ${isLocal ? "local-tile" : ""}`}>
@@ -29,15 +32,16 @@ const VideoTile: React.FC<{
           <div className="avatar-circle">{name.charAt(0).toUpperCase()}</div>
           <span>{name} {isVideoOff ? "(Camera Off)" : ""}</span>
         </div>
-      ) : (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={isLocal} // Always mute local to avoid feedback loop
-          className="peer-video-element"
-        />
-      )}
+      ) : null}
+
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={isLocal} // Always mute local to avoid feedback loop
+        className="peer-video-element"
+        style={{ display: isVideoOff || !stream ? "none" : "block" }}
+      />
 
       <div className="video-tile-footer">
         <span className="peer-name">
