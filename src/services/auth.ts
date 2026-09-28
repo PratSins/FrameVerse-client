@@ -1,6 +1,5 @@
 import type { AuthResponse, LoginRequest, User } from "../types/auth";
-
-const AUTH_API_URL = import.meta.env.VITE_AUTH_API_URL || "http://localhost:8081/api/v1/auth";
+import { AUTH_API_URL } from "../config";
 const STORAGE_KEY_AUTH = "frameverse_auth_session";
 
 export interface StoredSession {
@@ -14,11 +13,24 @@ export function isTokenExpired(token: string, bufferSeconds: number = 30): boole
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return true;
-    const payload = JSON.parse(atob(parts[1]));
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const jsonStr = decodeURIComponent(
+      atob(b64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    const payload = JSON.parse(jsonStr);
     if (!payload.exp) return true;
     return Date.now() / 1000 >= payload.exp - bufferSeconds;
   } catch {
-    return true;
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      if (!payload.exp) return true;
+      return Date.now() / 1000 >= payload.exp - bufferSeconds;
+    } catch {
+      return true;
+    }
   }
 }
 
@@ -48,33 +60,48 @@ export function clearSession(): void {
   }
 }
 
-export async function refreshSession(refreshToken: string): Promise<AuthResponse> {
-  const response = await fetch(`${AUTH_API_URL}/refresh`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+let activeRefreshPromise: Promise<AuthResponse> | null = null;
 
-  if (!response.ok) {
-    throw new Error("Session expired or refresh token invalid");
+export async function refreshSession(refreshToken: string): Promise<AuthResponse> {
+  if (activeRefreshPromise) {
+    return activeRefreshPromise;
   }
 
-  const data: AuthResponse = await response.json();
-  saveSession({
-    user: data.user,
-    accessToken: data.tokens.access_token,
-    refreshToken: data.tokens.refresh_token,
-  });
+  activeRefreshPromise = (async () => {
+    try {
+      const response = await fetch(`${AUTH_API_URL}/refresh`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
 
-  return data;
+      if (!response.ok) {
+        throw new Error("Session expired or refresh token invalid");
+      }
+
+      const data: AuthResponse = await response.json();
+      saveSession({
+        user: data.user,
+        accessToken: data.tokens.access_token,
+        refreshToken: data.tokens.refresh_token,
+      });
+
+      return data;
+    } finally {
+      activeRefreshPromise = null;
+    }
+  })();
+
+  return activeRefreshPromise;
 }
 
 /**
- * Validates the refresh token against the Auth backend on every page load.
- * Performs an active API call to POST /api/v1/auth/refresh to verify that
- * the refresh token has not expired (>7 days) or been revoked in PostgreSQL.
+ * Validates the session on application load:
+ * 1. If stored access token is still valid (not expired), returns it immediately.
+ * 2. If access token is expired, attempts a single refresh using refreshToken.
+ * 3. Only clears session if refresh token is rejected or absent.
  */
 export async function validateOrRefreshSession(): Promise<{
   session: StoredSession | null;
@@ -85,13 +112,18 @@ export async function validateOrRefreshSession(): Promise<{
     return { session: null, wasExpired: false };
   }
 
+  // If the access token is still fresh, reuse it without unnecessary network calls
+  if (current.accessToken && !isTokenExpired(current.accessToken)) {
+    return { session: current, wasExpired: false };
+  }
+
+  // If expired, check if we have a refresh token
   if (!current.refreshToken) {
     clearSession();
     return { session: null, wasExpired: true };
   }
 
   try {
-    // Actively verify and rotate session with Auth service on every page load
     const refreshed = await refreshSession(current.refreshToken);
     const updatedSession: StoredSession = {
       user: refreshed.user,
@@ -100,7 +132,7 @@ export async function validateOrRefreshSession(): Promise<{
     };
     return { session: updatedSession, wasExpired: false };
   } catch (err) {
-    console.warn("[Auth] On-load session validation failed:", err);
+    console.warn("[Auth] On-load session refresh failed:", err);
     clearSession();
     return { session: null, wasExpired: true };
   }

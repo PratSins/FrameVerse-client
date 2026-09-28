@@ -1,5 +1,7 @@
-const BACKEND_API_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:8080/api/v1";
-const API_BASE_URL = `${BACKEND_API_URL}/toonify`;
+import { getStoredSession } from "./auth";
+import { TOONIFY_API_URL } from "../config";
+
+const API_BASE_URL = TOONIFY_API_URL;
 
 export interface CreateUploadResponse {
   job_id: string;
@@ -20,18 +22,25 @@ export interface JobStatusResponse {
   error?: string;
 }
 
+function getEffectiveToken(token?: string | null): string | null {
+  if (token) return token;
+  const session = getStoredSession();
+  return session?.accessToken || null;
+}
+
 export async function createUploadUrl(
   contentType: string = "video/mp4",
   style: string = "anime",
   accessToken?: string | null
 ): Promise<CreateUploadResponse> {
   const cleanType = contentType.split(";")[0].trim() || "video/mp4";
+  const token = getEffectiveToken(accessToken);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const response = await fetch(`${API_BASE_URL}/upload-url`, {
@@ -79,9 +88,10 @@ export async function startProcessing(
   jobId: string,
   accessToken?: string | null
 ): Promise<ProcessJobResponse> {
+  const token = getEffectiveToken(accessToken);
   const headers: Record<string, string> = {};
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const response = await fetch(`${API_BASE_URL}/${jobId}/process`, {
@@ -100,9 +110,19 @@ export async function startProcessing(
   return response.json();
 }
 
-export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
+export async function getJobStatus(
+  jobId: string,
+  accessToken?: string | null
+): Promise<JobStatusResponse> {
+  const token = getEffectiveToken(accessToken);
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const response = await fetch(`${API_BASE_URL}/${jobId}`, {
     method: "GET",
+    headers,
   });
 
   if (!response.ok) {
@@ -118,16 +138,27 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
 
 export async function pollJobUntilComplete(
   jobId: string,
+  accessTokenOrOnPoll?: string | null | ((status: JobStatusResponse) => void),
   onPoll?: (status: JobStatusResponse) => void,
   intervalMs: number = 3000,
   maxTimeoutMs: number = 600000 // 10 minutes
 ): Promise<JobStatusResponse> {
+  let token: string | null = null;
+  let pollCallback = onPoll;
+
+  if (typeof accessTokenOrOnPoll === "function") {
+    pollCallback = accessTokenOrOnPoll;
+  } else if (typeof accessTokenOrOnPoll === "string") {
+    token = accessTokenOrOnPoll;
+  }
+
+  const effectiveToken = getEffectiveToken(token);
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxTimeoutMs) {
-    const job = await getJobStatus(jobId);
-    if (onPoll) {
-      onPoll(job);
+    const job = await getJobStatus(jobId, effectiveToken);
+    if (pollCallback) {
+      pollCallback(job);
     }
 
     if (job.status === "completed") {

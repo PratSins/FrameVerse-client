@@ -29,7 +29,7 @@ export default function CompositorView({
   const [duration, setDuration] = useState(0);
   const [statusMessage, setStatusMessage] = useState("Initializing hand tracker & media...");
 
-  const animFrameIdRef = useRef<number | null>(null);
+  const animFrameRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
   const isExportingRef = useRef(false);
 
@@ -56,12 +56,31 @@ export default function CompositorView({
 
       setTimeout(() => {
         video.removeEventListener("timeupdate", onTimeUpdate);
+        video.currentTime = 0;
         resolve(isFinite(video.duration) && video.duration > 0 ? video.duration : 0);
-      }, 600);
+      }, 500);
     });
   };
 
-  // Initialize MediaPipe & Video metadata
+  // Helper: wait until video has enough data loaded to play without buffering delay
+  const waitForVideoReady = (v: HTMLVideoElement): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      if (v.readyState >= 2) {
+        resolve();
+        return;
+      }
+      const onReady = () => {
+        v.removeEventListener("loadeddata", onReady);
+        v.removeEventListener("canplay", onReady);
+        resolve();
+      };
+      v.addEventListener("loadeddata", onReady, { once: true });
+      v.addEventListener("canplay", onReady, { once: true });
+      setTimeout(resolve, 3500); // 3.5s safety timeout
+    });
+  };
+
+  // Initialize MediaPipe, Preload Videos, & Pre-warm GPU Pipeline
   useEffect(() => {
     let active = true;
 
@@ -72,19 +91,24 @@ export default function CompositorView({
         if (!active) return;
         landmarkerRef.current = landmarker;
 
-        setStatusMessage("Preparing video canvas...");
+        setStatusMessage("Preparing video canvas & pre-buffering streams...");
         const orig = origRef.current;
         const sty = styRef.current;
 
-        if (orig) {
-          await new Promise<void>((resolve) => {
-            if (orig.readyState >= 1) {
-              resolve();
-            } else {
-              orig.onloadedmetadata = () => resolve();
-            }
-          });
+        if (orig && sty) {
+          // Wait for metadata on both videos
+          await Promise.all([
+            new Promise<void>((res) => {
+              if (orig.readyState >= 1) res();
+              else orig.addEventListener("loadedmetadata", () => res(), { once: true });
+            }),
+            new Promise<void>((res) => {
+              if (sty.readyState >= 1) res();
+              else sty.addEventListener("loadedmetadata", () => res(), { once: true });
+            }),
+          ]);
 
+          // Set canvas dimensions to match source video
           if (canvasRef.current && orig) {
             canvasRef.current.width = orig.videoWidth || 640;
             canvasRef.current.height = orig.videoHeight || 360;
@@ -94,37 +118,54 @@ export default function CompositorView({
               canvasRef.current.height
             );
 
-            // Calculate finite duration
+            // Determine video duration (prefer stylized MP4 duration as it is already finite)
             let detectedDuration = 0;
-            if (sty && isFinite(sty.duration) && sty.duration > 0) {
+            if (isFinite(sty.duration) && sty.duration > 0) {
               detectedDuration = sty.duration;
+            } else if (isFinite(orig.duration) && orig.duration > 0) {
+              detectedDuration = orig.duration;
             } else {
               detectedDuration = await resolveFiniteDuration(orig);
-              if (detectedDuration <= 0 && sty) {
-                detectedDuration = await resolveFiniteDuration(sty);
-              }
             }
 
             if (active && detectedDuration > 0) {
               setDuration(detectedDuration);
             }
 
-            // Draw initial poster frame
+            // Ensure both videos are at position 0
+            orig.currentTime = 0;
+            sty.currentTime = 0;
+
+            // Wait for both videos to have frames buffered (readyState >= 2)
+            await Promise.all([waitForVideoReady(orig), waitForVideoReady(sty)]);
+
+            // Pre-warm WebGL shaders & GPU pipeline so first play click NEVER freezes!
+            try {
+              const warmupCanvas = document.createElement("canvas");
+              warmupCanvas.width = 160;
+              warmupCanvas.height = 120;
+              const wCtx = warmupCanvas.getContext("2d");
+              if (wCtx) {
+                wCtx.fillStyle = "#000";
+                wCtx.fillRect(0, 0, 160, 120);
+                landmarker.detectForVideo(warmupCanvas, performance.now());
+              }
+            } catch (wErr) {
+              console.warn("GPU tracker warmup warning:", wErr);
+            }
+
+            // Draw initial poster frame directly onto canvas
             const ctx = canvasRef.current.getContext("2d");
-            if (ctx) {
-              orig.currentTime = 0.01;
-              orig.onseeked = () => {
-                if (canvasRef.current) {
-                  ctx.drawImage(orig, 0, 0, canvasRef.current.width, canvasRef.current.height);
-                }
-                orig.onseeked = null;
-              };
+            if (ctx && orig) {
+              ctx.drawImage(orig, 0, 0, canvasRef.current.width, canvasRef.current.height);
             }
           }
         }
 
-        setIsReady(true);
-        setStatusMessage("Ready! Press Play or Replay to watch the Finger Frame effect.");
+        if (active) {
+          setIsReady(true);
+          setStatusMessage("Ready! Press Play or Replay to watch the Finger Frame effect.");
+        }
       } catch (err) {
         console.error("Compositor init error:", err);
         setStatusMessage("Failed to initialize hand tracker. Please refresh.");
@@ -135,8 +176,8 @@ export default function CompositorView({
 
     return () => {
       active = false;
-      if (animFrameIdRef.current) {
-        cancelAnimationFrame(animFrameIdRef.current);
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
       }
     };
   }, [originalVideoUrl, stylizedVideoUrl]);
@@ -170,7 +211,7 @@ export default function CompositorView({
     }
 
     // Keep stylized video strictly in step
-    if (Math.abs(sty.currentTime - orig.currentTime) > 0.1) {
+    if (Math.abs(sty.currentTime - orig.currentTime) > 0.08) {
       sty.currentTime = orig.currentTime;
     }
 
@@ -182,17 +223,19 @@ export default function CompositorView({
 
     // Check if playback should continue
     const effectiveDuration = isFinite(duration) && duration > 0 ? duration : orig.duration;
-    const isAtEnd = orig.ended || (isFinite(effectiveDuration) && effectiveDuration > 0 && orig.currentTime >= effectiveDuration - 0.05);
+    const isAtEnd =
+      orig.ended ||
+      (isFinite(effectiveDuration) && effectiveDuration > 0 && orig.currentTime >= effectiveDuration - 0.05);
 
     if (!orig.paused && !isAtEnd) {
-      animFrameIdRef.current = requestAnimationFrame(renderFrame);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
     } else {
       orig.pause();
       sty.pause();
       setIsPlaying(false);
-      if (animFrameIdRef.current) {
-        cancelAnimationFrame(animFrameIdRef.current);
-        animFrameIdRef.current = null;
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
       }
     }
   }, [duration]);
@@ -202,27 +245,35 @@ export default function CompositorView({
     const sty = styRef.current;
     if (!orig || !sty || !isReady) return;
 
-    if (animFrameIdRef.current) {
-      cancelAnimationFrame(animFrameIdRef.current);
-      animFrameIdRef.current = null;
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
     }
 
-    orig.currentTime = time;
-    sty.currentTime = time;
+    if (Math.abs(orig.currentTime - time) > 0.05) {
+      orig.currentTime = time;
+    }
+    if (Math.abs(sty.currentTime - time) > 0.05) {
+      sty.currentTime = time;
+    }
+
     if (time === 0) {
       trackerRef.current?.reset();
     }
 
+    // Update UI playing state immediately so the button gives instant response
+    setIsPlaying(true);
+
     try {
       await Promise.all([orig.play(), sty.play()]);
-      setIsPlaying(true);
-      animFrameIdRef.current = requestAnimationFrame(renderFrame);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
     } catch (err) {
       console.warn("Play error:", err);
+      setIsPlaying(false);
     }
   };
 
-  const handlePlayPause = async () => {
+  const handlePlayPause = () => {
     const orig = origRef.current;
     const sty = styRef.current;
     if (!orig || !sty || !isReady) return;
@@ -231,9 +282,9 @@ export default function CompositorView({
       orig.pause();
       sty.pause();
       setIsPlaying(false);
-      if (animFrameIdRef.current) {
-        cancelAnimationFrame(animFrameIdRef.current);
-        animFrameIdRef.current = null;
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
       }
     } else {
       const effectiveDuration = isFinite(duration) && duration > 0 ? duration : orig.duration;
@@ -289,9 +340,9 @@ export default function CompositorView({
     orig.pause();
     sty.pause();
     setIsPlaying(false);
-    if (animFrameIdRef.current) {
-      cancelAnimationFrame(animFrameIdRef.current);
-      animFrameIdRef.current = null;
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
     }
 
     orig.currentTime = 0;
@@ -332,9 +383,9 @@ export default function CompositorView({
       setCurrentTime(0);
       setIsPlaying(false);
 
-      if (animFrameIdRef.current) {
-        cancelAnimationFrame(animFrameIdRef.current);
-        animFrameIdRef.current = null;
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
       }
 
       // 2. Stop media recorder
@@ -392,7 +443,7 @@ export default function CompositorView({
 
     try {
       await Promise.all([orig.play(), sty.play()]);
-      animFrameIdRef.current = requestAnimationFrame(renderFrame);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
     } catch (e) {
       console.error("Export play error:", e);
       finishExport();

@@ -89,6 +89,15 @@ export default function CameraView({
                     </button>
                 )}
 
+                {isCameraOpen && countdown !== null && (
+                    <button
+                        className="secondary-button"
+                        onClick={onStopRecording}
+                    >
+                        Cancel
+                    </button>
+                )}
+
                 {isRecording && countdown === null && (
                     <button
                         className="danger-button"

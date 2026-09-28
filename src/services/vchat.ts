@@ -1,7 +1,5 @@
 import type { CreateRoomResponse, RoomResponse } from "../types/vchat";
-
-const BACKEND_API_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:8080/api/v1";
-const BACKEND_WS_URL = import.meta.env.VITE_BACKEND_WS_URL || "ws://localhost:8080/ws/vchat";
+import { BACKEND_API_URL, BACKEND_WS_URL } from "../config";
 
 export async function createVChatRoom(
   name: string,

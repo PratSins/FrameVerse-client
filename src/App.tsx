@@ -49,6 +49,7 @@ function FrameVerseApp() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<number | null>(null);
+  const countdownTimerRef = useRef<number | null>(null);
 
   // --------------------------------------------------
   // Camera Controls
@@ -68,6 +69,21 @@ function FrameVerseApp() {
   };
 
   const closeCamera = () => {
+    if (countdownTimerRef.current !== null) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
     stream?.getTracks().forEach((track) => track.stop());
     setStream(null);
     setCameraOpen(false);
@@ -79,8 +95,8 @@ function FrameVerseApp() {
   // --------------------------------------------------
   // Recording Flow
   // --------------------------------------------------
-  const startRecording = () => {
-    if (!stream || isRecording) return;
+  const beginActualRecording = () => {
+    if (!stream) return;
 
     chunksRef.current = [];
     setRecordedVideoUrl(null);
@@ -118,30 +134,53 @@ function FrameVerseApp() {
         return prev + 1;
       });
     }, 1000);
+  };
 
-    const triggerCountdown = (seconds: number) => {
-      setCountdown(seconds);
-      const interval = window.setInterval(() => {
-        setCountdown((prev) => {
-          if (prev === null || prev <= 1) {
-            window.clearInterval(interval);
-            return null;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    };
+  const startRecording = () => {
+    if (!stream || isRecording || countdown !== null) return;
 
-    triggerCountdown(3);
+    if (countdownTimerRef.current !== null) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+
+    // 3-second countdown BEFORE recording begins
+    let count = 3;
+    setCountdown(count);
+
+    countdownTimerRef.current = window.setInterval(() => {
+      count -= 1;
+      if (count > 0) {
+        setCountdown(count);
+      } else {
+        if (countdownTimerRef.current !== null) {
+          window.clearInterval(countdownTimerRef.current);
+          countdownTimerRef.current = null;
+        }
+        setCountdown(null);
+        beginActualRecording();
+      }
+    }, 1000);
   };
 
   const stopRecording = () => {
-    if (!isRecording) return;
+    if (countdownTimerRef.current !== null) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setCountdown(null);
+
     if (recordingTimerRef.current !== null) {
       window.clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
-    mediaRecorderRef.current?.stop();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
     setIsRecording(false);
   };
 
@@ -191,6 +230,7 @@ function FrameVerseApp() {
       setConversionStep("AI model is initializing video processing...");
       const completedJob = await pollJobUntilComplete(
         uploadData.job_id,
+        accessToken,
         (job) => {
           if (job.status === "processing") {
             setConversionStep("AI model is currently generating stylized video frames...");
@@ -214,6 +254,14 @@ function FrameVerseApp() {
   };
 
   const handleReset = () => {
+    if (countdownTimerRef.current !== null) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
     stream?.getTracks().forEach((track) => track.stop());
 
     if (recordedVideoUrl) {
@@ -241,6 +289,9 @@ function FrameVerseApp() {
   // --------------------------------------------------
   useEffect(() => {
     return () => {
+      if (countdownTimerRef.current !== null) {
+        window.clearInterval(countdownTimerRef.current);
+      }
       if (recordingTimerRef.current !== null) {
         window.clearInterval(recordingTimerRef.current);
       }
