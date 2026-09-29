@@ -17,12 +17,44 @@ const VideoTile: React.FC<{
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    const videoEl = videoRef.current;
+    if (!videoEl || !stream) return;
+
+    // Attach stream to video element
+    videoEl.srcObject = stream;
+
+    const playVideo = () => {
       if (!isVideoOff) {
-        videoRef.current.play().catch(() => {});
+        videoEl.play().catch(() => {});
       }
-    }
+    };
+
+    playVideo();
+
+    // Recover from Wi-Fi jitters, track muting, or background pauses
+    const videoTracks = stream.getVideoTracks();
+    videoTracks.forEach((track) => {
+      track.onunmute = playVideo;
+    });
+
+    videoEl.onloadedmetadata = playVideo;
+    videoEl.onstalled = playVideo;
+    videoEl.onpause = () => {
+      if (!isVideoOff) {
+        playVideo();
+      }
+    };
+
+    return () => {
+      videoTracks.forEach((track) => {
+        track.onunmute = null;
+      });
+      if (videoEl) {
+        videoEl.onloadedmetadata = null;
+        videoEl.onstalled = null;
+        videoEl.onpause = null;
+      }
+    };
   }, [stream, isVideoOff]);
 
   return (
@@ -38,7 +70,7 @@ const VideoTile: React.FC<{
         ref={videoRef}
         autoPlay
         playsInline
-        muted={isLocal} // Always mute local to avoid feedback loop
+        muted={isLocal} // Always mute local to avoid audio feedback loop
         className="peer-video-element"
         style={{ display: isVideoOff || !stream ? "none" : "block" }}
       />

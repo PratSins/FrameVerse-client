@@ -2,11 +2,17 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { SignalingMessage, PeerInfo, RoomInfoPayload } from "../types/vchat";
 import { getWebSocketSignalingUrl } from "../services/vchat";
 
+// High-reliability redundant STUN servers across different providers & ports
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:openrelay.metered.ca:80" },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 export interface RemotePeer {
@@ -45,12 +51,33 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const peerNamesRef = useRef<Map<string, string>>(new Map());
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const iceRestartTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Helper to send messages over WebSocket
   const sendMessage = useCallback((msg: SignalingMessage) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
     }
+  }, []);
+
+  // Optimize video sender parameters to prevent bufferbloat and frozen frames
+  const optimizeVideoSenders = useCallback((pc: RTCPeerConnection) => {
+    pc.getSenders().forEach((sender) => {
+      if (sender.track?.kind === "video") {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          // Cap video bitrate at 1.2 Mbps and maintain framerate over real-world Wi-Fi
+          params.encodings[0].maxBitrate = 1200000;
+          params.degradationPreference = "maintain-framerate";
+          sender.setParameters(params).catch(() => {});
+        } catch {
+          // Ignore if sender parameters not supported
+        }
+      }
+    });
   }, []);
 
   // Update React remote peers list
@@ -70,6 +97,30 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
     });
     setRemotePeers(list);
   }, []);
+
+  // Perform ICE Restart when connection state stalls or drops
+  const restartIceForPeer = useCallback(
+    async (peerId: string) => {
+      const pc = peerConnectionsRef.current.get(peerId);
+      if (!pc || pc.signalingState !== "stable") return;
+
+      try {
+        console.log(`[vChat] Initiating ICE restart for peer ${peerId}`);
+        const offer = await pc.createOffer({ iceRestart: true });
+        await pc.setLocalDescription(offer);
+        optimizeVideoSenders(pc);
+
+        sendMessage({
+          type: "offer",
+          target_id: peerId,
+          payload: offer,
+        });
+      } catch (err) {
+        console.warn(`[vChat] ICE restart failed for ${peerId}:`, err);
+      }
+    },
+    [sendMessage, optimizeVideoSenders]
+  );
 
   // Create an RTCPeerConnection for a given peer
   const createPeerConnection = useCallback(
@@ -103,26 +154,47 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
       // Handle incoming remote media tracks
       pc.ontrack = (event) => {
         const [remoteStream] = event.streams;
+        const incomingStream = remoteStream || new MediaStream([event.track]);
+
         setRemotePeers((prev) => {
           const existing = prev.find((p) => p.id === peerId);
           if (existing) {
-            return prev.map((p) =>
-              p.id === peerId ? { ...p, stream: remoteStream || new MediaStream([event.track]) } : p
-            );
+            // Re-instantiate MediaStream with all tracks to guarantee React state reactivity
+            const allTracks = incomingStream.getTracks();
+            const freshStream = new MediaStream(allTracks);
+            return prev.map((p) => (p.id === peerId ? { ...p, stream: freshStream } : p));
           }
-          return [...prev, { id: peerId, name: peerName, stream: remoteStream || new MediaStream([event.track]) }];
+          return [...prev, { id: peerId, name: peerName, stream: incomingStream }];
         });
       };
 
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
-          // peer disconnected
+      // Auto-recover on ICE connection state changes (Wi-Fi dropouts / NAT stalls)
+      pc.oniceconnectionstatechange = () => {
+        console.log(`[vChat] ICE State for ${peerName} (${peerId}): ${pc.iceConnectionState}`);
+
+        // Clear any existing retry timer
+        const existingTimer = iceRestartTimeoutsRef.current.get(peerId);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+          iceRestartTimeoutsRef.current.delete(peerId);
+        }
+
+        if (pc.iceConnectionState === "disconnected") {
+          // If disconnected for more than 2.5 seconds, auto-trigger ICE restart
+          const timer = setTimeout(() => {
+            if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
+              restartIceForPeer(peerId);
+            }
+          }, 2500);
+          iceRestartTimeoutsRef.current.set(peerId, timer);
+        } else if (pc.iceConnectionState === "failed") {
+          restartIceForPeer(peerId);
         }
       };
 
       return pc;
     },
-    [sendMessage]
+    [sendMessage, restartIceForPeer]
   );
 
   // Clean up a specific peer
@@ -131,6 +203,11 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
     if (pc) {
       pc.close();
       peerConnectionsRef.current.delete(peerId);
+    }
+    const timer = iceRestartTimeoutsRef.current.get(peerId);
+    if (timer) {
+      clearTimeout(timer);
+      iceRestartTimeoutsRef.current.delete(peerId);
     }
     peerNamesRef.current.delete(peerId);
     pendingCandidatesRef.current.delete(peerId);
@@ -143,16 +220,25 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
     const currentPCs = peerConnectionsRef.current;
     const currentNames = peerNamesRef.current;
     const currentPending = pendingCandidatesRef.current;
+    const currentTimeouts = iceRestartTimeoutsRef.current;
 
     async function initCall() {
       setIsConnecting(true);
       setError(null);
 
       try {
-        // Step 1: Acquire Local Media Stream
+        // Step 1: Acquire Local Media Stream with balanced constraints
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: true,
+          video: {
+            width: { ideal: 1280, max: 1280 },
+            height: { ideal: 720, max: 720 },
+            frameRate: { ideal: 24, max: 30 },
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         });
 
         if (isCancelled) {
@@ -211,6 +297,7 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
                       const pc = createPeerConnection(peer.id, peer.name);
                       const offer = await pc.createOffer();
                       await pc.setLocalDescription(offer);
+                      optimizeVideoSenders(pc);
 
                       sendMessage({
                         type: "offer",
@@ -237,15 +324,20 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
 
                   await pc.setRemoteDescription(new RTCSessionDescription(msg.payload as RTCSessionDescriptionInit));
 
-                  // Drain pending ICE candidates
+                  // Drain pending ICE candidates safely with try/catch
                   const queued = pendingCandidatesRef.current.get(msg.sender_id) || [];
                   for (const candidate of queued) {
-                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                    try {
+                      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                    } catch (e) {
+                      console.warn("[vChat] Error adding queued ICE candidate:", e);
+                    }
                   }
                   pendingCandidatesRef.current.delete(msg.sender_id);
 
                   const answer = await pc.createAnswer();
                   await pc.setLocalDescription(answer);
+                  optimizeVideoSenders(pc);
 
                   sendMessage({
                     type: "answer",
@@ -261,10 +353,14 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
                   if (pc) {
                     await pc.setRemoteDescription(new RTCSessionDescription(msg.payload as RTCSessionDescriptionInit));
 
-                    // Drain pending ICE candidates
+                    // Drain pending ICE candidates safely with try/catch
                     const queued = pendingCandidatesRef.current.get(msg.sender_id) || [];
                     for (const candidate of queued) {
-                      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                      try {
+                        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                      } catch (e) {
+                        console.warn("[vChat] Error adding queued ICE candidate:", e);
+                      }
                     }
                     pendingCandidatesRef.current.delete(msg.sender_id);
                   }
@@ -275,7 +371,11 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
                   if (!msg.sender_id || !msg.payload) break;
                   const pc = peerConnectionsRef.current.get(msg.sender_id);
                   if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                    await pc.addIceCandidate(new RTCIceCandidate(msg.payload as RTCIceCandidateInit));
+                    try {
+                      await pc.addIceCandidate(new RTCIceCandidate(msg.payload as RTCIceCandidateInit));
+                    } catch (e) {
+                      console.warn("[vChat] Error adding live ICE candidate:", e);
+                    }
                   } else {
                     // Queue candidate until remote description is set
                     const existing = pendingCandidatesRef.current.get(msg.sender_id) || [];
@@ -328,6 +428,8 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
       currentPCs.clear();
       currentNames.clear();
       currentPending.clear();
+      currentTimeouts.forEach((t) => clearTimeout(t));
+      currentTimeouts.clear();
 
       // Close WebSocket
       if (wsRef.current) {
@@ -335,7 +437,7 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
         wsRef.current = null;
       }
     };
-  }, [roomId, accessToken, createPeerConnection, closePeer, sendMessage, updateRemotePeersState]);
+  }, [roomId, accessToken, createPeerConnection, closePeer, sendMessage, updateRemotePeersState, optimizeVideoSenders]);
 
   // Audio Toggle
   const toggleAudio = useCallback(() => {
@@ -378,7 +480,11 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
       // 2. Turn camera ON: request fresh hardware stream
       try {
         const camStream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: {
+            width: { ideal: 1280, max: 1280 },
+            height: { ideal: 720, max: 720 },
+            frameRate: { ideal: 24, max: 30 },
+          },
         });
         const newTrack = camStream.getVideoTracks()[0];
         if (!newTrack) return;
@@ -395,6 +501,7 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
           } else if (localStreamRef.current) {
             pc.addTrack(newTrack, localStreamRef.current);
           }
+          optimizeVideoSenders(pc);
         });
 
         setIsVideoMuted(false);
@@ -403,7 +510,7 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
         console.error("Failed to re-enable camera:", err);
       }
     }
-  }, [isVideoMuted]);
+  }, [isVideoMuted, optimizeVideoSenders]);
 
   // Leave Room
   const leaveRoom = useCallback(() => {
@@ -417,6 +524,8 @@ export function useWebRTC(roomId: string, accessToken?: string | null): UseWebRT
     }
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
+    iceRestartTimeoutsRef.current.forEach((t) => clearTimeout(t));
+    iceRestartTimeoutsRef.current.clear();
     setLocalStream(null);
     setRemotePeers([]);
     setIsConnected(false);
