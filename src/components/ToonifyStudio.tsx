@@ -21,7 +21,7 @@ const STYLES = [
 ];
 
 export default function ToonifyStudio() {
-  const { accessToken } = useAuth();
+  const { accessToken, openAuthModal } = useAuth();
 
   // Camera & Recording state
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -240,6 +240,9 @@ export default function ToonifyStudio() {
       console.error("Conversion failed:", err);
       const message = err instanceof Error ? err.message : "Unknown error occurred";
       setConversionError(message);
+      if (message.toLowerCase().includes("logged in") || message.toLowerCase().includes("sign in")) {
+        openAuthModal("Your session expired. Please sign in to toonify your videos.");
+      }
     } finally {
       setIsConverting(false);
       setConversionStep("");
@@ -379,8 +382,17 @@ export default function ToonifyStudio() {
             )}
 
             {conversionError && (
-              <div className="conversion-error-box">
-                <p>⚠️ {conversionError}</p>
+              <div className="conversion-error-box" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                <p style={{ margin: 0 }}>⚠️ {conversionError}</p>
+                {(conversionError.toLowerCase().includes("logged in") || conversionError.toLowerCase().includes("sign in")) && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => openAuthModal("Please sign in to toonify your videos.")}
+                    style={{ padding: "6px 14px", fontSize: "13px", background: "#ea4335", color: "#fff", borderColor: "#ea4335" }}
+                  >
+                    Sign In
+                  </button>
+                )}
               </div>
             )}
 

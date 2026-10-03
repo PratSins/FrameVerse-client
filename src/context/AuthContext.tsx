@@ -85,12 +85,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // 3. Proactive Background Refresher: Keeps token alive 2 minutes before it expires!
   useEffect(() => {
     const interval = window.setInterval(async () => {
-      if (!session?.refreshToken || !session?.accessToken) return;
+      const current = getStoredSession();
+      if (!current?.refreshToken || !current?.accessToken) return;
 
       // Check if access token will expire within the next 2 minutes (120s)
-      if (isTokenExpired(session.accessToken, 120)) {
+      if (isTokenExpired(current.accessToken, 120)) {
         try {
-          await refreshSession(session.refreshToken);
+          await refreshSession(current.refreshToken);
         } catch (err) {
           console.warn("[Auth] Proactive interval refresh failed:", err);
         }
@@ -100,7 +101,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => {
       window.clearInterval(interval);
     };
-  }, [session?.refreshToken, session?.accessToken]);
+  }, []);
 
   const login = async (credentials: LoginRequest) => {
     const data = await loginUser(credentials);

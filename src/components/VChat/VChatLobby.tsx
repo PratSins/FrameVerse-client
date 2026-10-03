@@ -1,12 +1,14 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { createVChatRoom, getVChatRoom } from "../../services/vchat";
 
 interface VChatLobbyProps {
-  onJoinRoom: (roomId: string) => void;
+  onJoinRoom?: (roomId: string) => void;
 }
 
 export const VChatLobby: React.FC<VChatLobbyProps> = ({ onJoinRoom }) => {
+  const navigate = useNavigate();
   const { accessToken, user, openAuthModal, isAuthenticated } = useAuth();
 
   const [roomName, setRoomName] = useState("");
@@ -24,7 +26,11 @@ export const VChatLobby: React.FC<VChatLobbyProps> = ({ onJoinRoom }) => {
     try {
       const name = roomName.trim() || `${user?.full_name || "FrameVerse"}'s Room`;
       const res = await createVChatRoom(name, maxParticipants, accessToken);
-      onJoinRoom(res.room_id);
+      if (onJoinRoom) {
+        onJoinRoom(res.room_id);
+      } else {
+        navigate(`/vchat/room/${res.room_id}`);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to create room.";
       setError(msg);
@@ -48,7 +54,11 @@ export const VChatLobby: React.FC<VChatLobbyProps> = ({ onJoinRoom }) => {
     try {
       // Validate room existence with backend
       await getVChatRoom(id, accessToken);
-      onJoinRoom(id);
+      if (onJoinRoom) {
+        onJoinRoom(id);
+      } else {
+        navigate(`/vchat/room/${id}`);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Could not find room with this ID.";
       setError(msg);

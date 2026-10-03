@@ -8,30 +8,43 @@ export interface StoredSession {
   refreshToken: string;
 }
 
-export function isTokenExpired(token: string, bufferSeconds: number = 30): boolean {
-  if (!token) return true;
+/**
+ * Safely decodes base64url JWT payload with correct padding
+ */
+function parseJwtPayload(token: string): { exp?: number; [key: string]: unknown } | null {
+  if (!token) return null;
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return true;
-    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    if (parts.length !== 3) return null;
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4 !== 0) {
+      b64 += "=";
+    }
     const jsonStr = decodeURIComponent(
       atob(b64)
         .split("")
         .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
         .join("")
     );
-    const payload = JSON.parse(jsonStr);
-    if (!payload.exp) return true;
-    return Date.now() / 1000 >= payload.exp - bufferSeconds;
+    return JSON.parse(jsonStr);
   } catch {
     try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      if (!payload.exp) return true;
-      return Date.now() / 1000 >= payload.exp - bufferSeconds;
+      let b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4 !== 0) {
+        b64 += "=";
+      }
+      return JSON.parse(atob(b64));
     } catch {
-      return true;
+      return null;
     }
   }
+}
+
+export function isTokenExpired(token: string, bufferSeconds: number = 30): boolean {
+  if (!token) return true;
+  const payload = parseJwtPayload(token);
+  if (!payload || !payload.exp) return true;
+  return Date.now() / 1000 >= payload.exp - bufferSeconds;
 }
 
 export function getStoredSession(): StoredSession | null {
@@ -62,9 +75,19 @@ export function clearSession(): void {
 
 let activeRefreshPromise: Promise<AuthResponse> | null = null;
 
-export async function refreshSession(refreshToken: string): Promise<AuthResponse> {
+export async function refreshSession(explicitRefreshToken?: string): Promise<AuthResponse> {
   if (activeRefreshPromise) {
     return activeRefreshPromise;
+  }
+
+  // Always read the latest active refresh token from storage to avoid stale closures
+  const tokenToUse = explicitRefreshToken || getStoredSession()?.refreshToken;
+  if (!tokenToUse) {
+    clearSession();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("frameverse:auth-expired"));
+    }
+    throw new Error("No refresh token available");
   }
 
   activeRefreshPromise = (async () => {
@@ -74,11 +97,12 @@ export async function refreshSession(refreshToken: string): Promise<AuthResponse
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        body: JSON.stringify({ refresh_token: tokenToUse }),
       });
 
       if (!response.ok) {
-        throw new Error("Session expired or refresh token invalid");
+        const errText = await response.text().catch(() => "");
+        throw new Error(`Session expired (${response.status}): ${errText}`);
       }
 
       const data: AuthResponse = await response.json();
@@ -97,6 +121,13 @@ export async function refreshSession(refreshToken: string): Promise<AuthResponse
       }
 
       return data;
+    } catch (err) {
+      console.warn("[Auth] Token refresh failed:", err);
+      clearSession();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("frameverse:auth-expired"));
+      }
+      throw err;
     } finally {
       activeRefreshPromise = null;
     }
@@ -126,15 +157,58 @@ export async function getFreshAccessToken(): Promise<string | null> {
       return refreshed.tokens.access_token;
     } catch (err) {
       console.warn("[Auth] Background token refresh failed:", err);
-      clearSession();
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("frameverse:auth-expired"));
-      }
       return null;
     }
   }
 
   return null;
+}
+
+/**
+ * Enterprise resilient HTTP fetch wrapper with automatic 401 retry:
+ * 1. Attaches fresh Bearer token automatically.
+ * 2. If the server returns 401 Unauthorized, automatically triggers a silent refresh and retries the request once.
+ */
+export async function fetchWithAuth(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  // 1. Resolve fresh token
+  let token = await getFreshAccessToken();
+  if (!token) {
+    const session = getStoredSession();
+    token = session?.accessToken || null;
+  }
+
+  const headers = new Headers(options.headers || {});
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  // 2. Initial HTTP request
+  let response = await fetch(url, { ...options, headers });
+
+  // 3. Auto-recover on 401 Unauthorized
+  if (response.status === 401) {
+    const session = getStoredSession();
+    if (session?.refreshToken) {
+      try {
+        console.warn("[Auth] 401 Unauthorized detected. Attempting silent token refresh & retry...");
+        const refreshed = await refreshSession(session.refreshToken);
+        const newToken = refreshed.tokens.access_token;
+
+        const retryHeaders = new Headers(options.headers || {});
+        retryHeaders.set("Authorization", `Bearer ${newToken}`);
+
+        // Retry once with the newly refreshed token
+        response = await fetch(url, { ...options, headers: retryHeaders });
+      } catch (err) {
+        console.warn("[Auth] Automatic 401 retry failed:", err);
+      }
+    }
+  }
+
+  return response;
 }
 
 /**
@@ -152,27 +226,38 @@ export async function validateOrRefreshSession(): Promise<{
     return { session: null, wasExpired: false };
   }
 
-  // If the access token is still fresh, reuse it without unnecessary network calls
-  if (current.accessToken && !isTokenExpired(current.accessToken)) {
-    return { session: current, wasExpired: false };
-  }
+  try {
+    // 1. If access token is still unexpired, verify usability with /me endpoint
+    if (current.accessToken && !isTokenExpired(current.accessToken, 15)) {
+      try {
+        const freshUser = await getCurrentUser(current.accessToken);
+        const validatedSession: StoredSession = {
+          ...current,
+          user: freshUser,
+        };
+        saveSession(validatedSession);
+        return { session: validatedSession, wasExpired: false };
+      } catch (meErr) {
+        console.warn("[Auth] Access token rejected by server, attempting refresh token...", meErr);
+      }
+    }
 
-  // If expired, check if we have a refresh token
-  if (!current.refreshToken) {
+    // 2. If access token is expired or rejected, attempt refresh via refresh token
+    if (current.refreshToken) {
+      const refreshed = await refreshSession(current.refreshToken);
+      const updatedSession: StoredSession = {
+        user: refreshed.user,
+        accessToken: refreshed.tokens.access_token,
+        refreshToken: refreshed.tokens.refresh_token,
+      };
+      return { session: updatedSession, wasExpired: false };
+    }
+
+    // 3. If neither access token nor refresh token is usable
     clearSession();
     return { session: null, wasExpired: true };
-  }
-
-  try {
-    const refreshed = await refreshSession(current.refreshToken);
-    const updatedSession: StoredSession = {
-      user: refreshed.user,
-      accessToken: refreshed.tokens.access_token,
-      refreshToken: refreshed.tokens.refresh_token,
-    };
-    return { session: updatedSession, wasExpired: false };
   } catch (err) {
-    console.warn("[Auth] On-load session refresh failed:", err);
+    console.warn("[Auth] On-load session validation/refresh failed:", err);
     clearSession();
     return { session: null, wasExpired: true };
   }
@@ -226,12 +311,10 @@ export async function logoutUser(refreshToken?: string): Promise<void> {
   clearSession();
 }
 
-export async function getCurrentUser(accessToken: string): Promise<User> {
-  const response = await fetch(`${AUTH_API_URL}/me`, {
+export async function getCurrentUser(accessToken?: string): Promise<User> {
+  const response = await fetchWithAuth(`${AUTH_API_URL}/me`, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
   });
 
   if (!response.ok) {

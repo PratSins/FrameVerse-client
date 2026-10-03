@@ -1,4 +1,4 @@
-import { getFreshAccessToken, getStoredSession } from "./auth";
+import { fetchWithAuth } from "./auth";
 import { TOONIFY_API_URL } from "../config";
 
 const API_BASE_URL = TOONIFY_API_URL;
@@ -22,32 +22,22 @@ export interface JobStatusResponse {
   error?: string;
 }
 
-async function getEffectiveToken(token?: string | null): Promise<string | null> {
-  const fresh = await getFreshAccessToken();
-  if (fresh) return fresh;
-  if (token) return token;
-  const session = getStoredSession();
-  return session?.accessToken || null;
-}
-
 export async function createUploadUrl(
   contentType: string = "video/mp4",
   style: string = "anime",
   accessToken?: string | null
 ): Promise<CreateUploadResponse> {
   const cleanType = contentType.split(";")[0].trim() || "video/mp4";
-  const token = await getEffectiveToken(accessToken);
-
-  const headers: Record<string, string> = {
+  const customHeaders: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (accessToken) {
+    customHeaders["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}/upload-url`, {
+  const response = await fetchWithAuth(`${API_BASE_URL}/upload-url`, {
     method: "POST",
-    headers,
+    headers: customHeaders,
     body: JSON.stringify({
       content_type: cleanType,
       style: style,
@@ -72,6 +62,7 @@ export async function uploadVideoToGCS(
 ): Promise<void> {
   const cleanType = contentType.split(";")[0].trim() || "video/mp4";
 
+  // Direct PUT to GCS Signed URL (no Bearer token needed; signed URL embeds authorization)
   const response = await fetch(uploadUrl, {
     method: "PUT",
     headers: {
@@ -90,15 +81,14 @@ export async function startProcessing(
   jobId: string,
   accessToken?: string | null
 ): Promise<ProcessJobResponse> {
-  const token = await getEffectiveToken(accessToken);
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  const customHeaders: Record<string, string> = {};
+  if (accessToken) {
+    customHeaders["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}/${jobId}/process`, {
+  const response = await fetchWithAuth(`${API_BASE_URL}/${jobId}/process`, {
     method: "POST",
-    headers,
+    headers: customHeaders,
   });
 
   if (!response.ok) {
@@ -116,15 +106,14 @@ export async function getJobStatus(
   jobId: string,
   accessToken?: string | null
 ): Promise<JobStatusResponse> {
-  const token = await getEffectiveToken(accessToken);
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  const customHeaders: Record<string, string> = {};
+  if (accessToken) {
+    customHeaders["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}/${jobId}`, {
+  const response = await fetchWithAuth(`${API_BASE_URL}/${jobId}`, {
     method: "GET",
-    headers,
+    headers: customHeaders,
   });
 
   if (!response.ok) {
@@ -157,8 +146,7 @@ export async function pollJobUntilComplete(
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxTimeoutMs) {
-    const currentToken = await getEffectiveToken(token);
-    const job = await getJobStatus(jobId, currentToken);
+    const job = await getJobStatus(jobId, token);
     if (pollCallback) {
       pollCallback(job);
     }

@@ -1,31 +1,22 @@
 import type { CreateRoomResponse, RoomResponse } from "../types/vchat";
 import { BACKEND_API_URL, BACKEND_WS_URL } from "../config";
-import { getFreshAccessToken, getStoredSession } from "./auth";
-
-async function getEffectiveToken(token?: string | null): Promise<string | null> {
-  const fresh = await getFreshAccessToken();
-  if (fresh) return fresh;
-  if (token) return token;
-  const session = getStoredSession();
-  return session?.accessToken || null;
-}
+import { fetchWithAuth, getStoredSession } from "./auth";
 
 export async function createVChatRoom(
   name: string,
   maxParticipants: number = 4,
   accessToken?: string | null
 ): Promise<CreateRoomResponse> {
-  const token = await getEffectiveToken(accessToken);
-  const headers: Record<string, string> = {
+  const customHeaders: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (accessToken) {
+    customHeaders["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${BACKEND_API_URL}/vchat/rooms`, {
+  const response = await fetchWithAuth(`${BACKEND_API_URL}/vchat/rooms`, {
     method: "POST",
-    headers,
+    headers: customHeaders,
     body: JSON.stringify({
       name: name || "FrameVerse Room",
       max_participants: maxParticipants,
@@ -47,15 +38,14 @@ export async function getVChatRoom(
   roomId: string,
   accessToken?: string | null
 ): Promise<RoomResponse> {
-  const token = await getEffectiveToken(accessToken);
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  const customHeaders: Record<string, string> = {};
+  if (accessToken) {
+    customHeaders["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${BACKEND_API_URL}/vchat/rooms/${roomId}`, {
+  const response = await fetchWithAuth(`${BACKEND_API_URL}/vchat/rooms/${roomId}`, {
     method: "GET",
-    headers,
+    headers: customHeaders,
   });
 
   if (!response.ok) {
